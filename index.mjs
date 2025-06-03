@@ -38,7 +38,7 @@ const teamMembers = {
 app.use('/api', routes);
 
 app.get('/', (req, res) => {
-  res.send('✅ Pragati Glass Order Management API is Running!');
+  res.send('Pragati Glass Order Management API is Running!');
 });
 
 io.on('connection', (socket) => {
