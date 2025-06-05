@@ -10,6 +10,11 @@ export const users = [
     role: "admin"
   },
   {
+    user: "superadmin_1",
+    password: "pg@superadmin",
+    role: "superadmin"
+  },
+  {
     user: "glass_team",
     password: "pg@glass",
     role: "user",

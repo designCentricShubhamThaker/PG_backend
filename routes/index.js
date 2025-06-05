@@ -5,6 +5,12 @@ import capRoutes from './capRoutes.js';
 import boxRoutes from './boxRoutes.js';
 import pumpRoutes from './pumpRoutes.js'; 
 import authRoutes from './authRoutes.js'; 
+import accessoryRoutes from './accessoryRoutes.js'; 
+import bottleDataRoutes from './bottleDataRoutes.js'; 
+import pumpDataRoutes from './pumpDataRoutes.js'; 
+import capDataRoutes from './capDataRoutes.js'; 
+import boxDataRoutes from './boxDataRoutes.js'; 
+
 
 const router = express.Router();
 
@@ -15,5 +21,10 @@ router.use('/caps', capRoutes);
 router.use('/boxes', boxRoutes);
 router.use('/pumps', pumpRoutes);
 router.use('/auth', authRoutes);
+router.use('/accessories', accessoryRoutes)
+router.use('/bottledata', bottleDataRoutes)
+router.use('/pumpdata', pumpDataRoutes)
+router.use('/capdata', capDataRoutes)
+router.use('/boxdata', boxDataRoutes)
 
 export default router;

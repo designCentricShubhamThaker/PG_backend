@@ -14,13 +14,15 @@ app.use(express.json());
 const httpServer = createServer(app);
 
 app.use(cors({
-  origin: process.env.PROD_CLIENT_URL,
+  // origin: process.env.PROD_CLIENT_URL,
+  origin: process.env.LOCAL_CLIENT_URL,
   credentials: true
 }));
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "https://pragati-glass-p1.vercel.app",
+    // origin: "https://pragati-glass-p1.vercel.app",
+    origin: "http://localhost:5173",
     methods: ["GET", "POST"],
     credentials: true
   }
