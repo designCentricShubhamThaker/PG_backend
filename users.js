@@ -66,17 +66,24 @@ export const users = [
     role: "user",
     team:"box"
   },
-  {
-    user: "sticker",
-    password: "pg@sticker",
-    role: "user",
-    team:"sticker"
-  },
-  {
-    user: "liner",
-    password: "pg@liner",
-    role: "user",
-    team:"liner"
-  },
 
+  {
+    user: "anita_singh",
+    password: "pg@anita",
+    role: "team",
+
+  },
+  {
+    user: "rahul_mehra",
+    password: "pg@rahul",
+    role: "team",
+    team: "team"
+  },
+  {
+    user: "sneha_kapoor",
+    password: "pg@sneha",
+    role: "team",
+
+  },
+ 
 ]

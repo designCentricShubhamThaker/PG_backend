@@ -10,6 +10,7 @@ import bottleDataRoutes from './bottleDataRoutes.js';
 import pumpDataRoutes from './pumpDataRoutes.js'; 
 import capDataRoutes from './capDataRoutes.js'; 
 import boxDataRoutes from './boxDataRoutes.js'; 
+import customerRoutes from './customerRoutes.js'; 
 
 
 const router = express.Router();
@@ -26,5 +27,6 @@ router.use('/bottledata', bottleDataRoutes)
 router.use('/pumpdata', pumpDataRoutes)
 router.use('/capdata', capDataRoutes)
 router.use('/boxdata', boxDataRoutes)
+router.use('/customer', customerRoutes)
 
 export default router;

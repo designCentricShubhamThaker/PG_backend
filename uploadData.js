@@ -1,15 +1,16 @@
 // // uploadData.js (located at root)
 
 // import './config/db.js'; // Connect to MongoDB
-// import AccessoriesData from './models/AccessoriesData.js'; // Mongoose model
-// import adata from './data/adata.js'; // Your data array
+// import custdata from './data/custdata.js';
+// import CustomerData from './models/CustomerData.js'; 
+
 
 // const uploadData = async () => {
 //   try {
  
 
 //     // Insert new data
-//     await AccessoriesData.insertMany(adata);
+//     await CustomerData.insertMany(custdata);
 //     console.log('✅ Data uploaded successfully');
 
 //     process.exit(); // Exit script
