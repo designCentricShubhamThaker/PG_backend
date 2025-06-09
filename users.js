@@ -71,18 +71,19 @@ export const users = [
     user: "anita_singh",
     password: "pg@anita",
     role: "team",
-
+    team:"marketing"
   },
   {
     user: "rahul_mehra",
     password: "pg@rahul",
     role: "team",
-    team: "team"
+     team:"marketing"
   },
   {
     user: "sneha_kapoor",
     password: "pg@sneha",
     role: "team",
+     team:"marketing"
 
   },
  

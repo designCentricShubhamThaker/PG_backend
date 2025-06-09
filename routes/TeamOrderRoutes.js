@@ -8,7 +8,7 @@ import {
   deleteOrder,
   createOrderItem,
   getOrderByNumber
-} from '../controllers/orderController.js';
+} from '../controllers/TeamOrderController.js';
 
 const router = express.Router();
 

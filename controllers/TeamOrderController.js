@@ -6,124 +6,65 @@ import BoxItem from '../models/BoxItem.js';
 import PumpItem from '../models/PumpItem.js';
 import mongoose from 'mongoose';
 
-const filterOrdersByUser = (orders, user) => {
-  return orders.filter(order => {
-    return order.item_ids.some(item => {
-
-      const hasGlass = item.team_assignments?.glass?.some(g => 
-        g.assigned_user === user
-      );
-      const hasCaps = item.team_assignments?.caps?.some(c => 
-        c.assigned_user === user
-      );
-      const hasBoxes = item.team_assignments?.boxes?.some(b => 
-        b.assigned_user === user
-      );
-      const hasPumps = item.team_assignments?.pumps?.some(p => 
-        p.assigned_user === user
-      );
-      
-      return hasGlass || hasCaps || hasBoxes || hasPumps;
-    });
-  });
-};
-
-export const getAllOrders = async (req, res, next) => {
+// GET /api/team-orders?team=Box%20Team&created_by=anita_singh&orderType=pending
+export const getAllOrders = async (req, res) => {
   try {
-    const user = req.user?.user;
-    
-    if (!user) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User information is required' 
+    const { team, created_by, orderType } = req.query;
+
+    if (!team || !created_by) {
+      return res.status(400).json({
+        success: false,
+        message: 'Team and created_by are required',
       });
     }
-    
-    const { orderType } = req.query;
-    
-    let filter = {};
-    
+
+    const filter = {
+      team,
+      created_by, // filter orders by the logged-in user
+    };
+
     if (orderType === 'pending') {
       filter.order_status = 'Pending';
     } else if (orderType === 'completed') {
       filter.order_status = 'Completed';
     }
-    
-    const allOrders = await Order.find(filter)
-      .sort({ createdAt: -1 })
-      .populate({
-        path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-        },
-      });
 
-    const userOrders = filterOrdersByUser(allOrders, user);
+    const orders = await Order.find(filter).populate({
+      path: 'item_ids',
+      populate: {
+        path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+      },
+    });
 
-    res.status(200).json({ 
-      success: true, 
-      count: userOrders.length, 
-      data: userOrders 
+    res.status(200).json({
+      success: true,
+      count: orders.length,
+      data: orders,
     });
   } catch (error) {
-    next(error);
+    console.error('Error fetching team orders:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch orders',
+    });
   }
 };
+
+
 
 export const getOrderById = async (req, res, next) => {
   try {
-    const user = req.user?.user;
+    const { team, user } = req.query;
     
-    if (!user) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User information is required' 
-      });
-    }
-
-    const order = await Order.findById(req.params.id)
-      .populate({
-        path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-        },
-      });
+    // Create filter for team and user
+    let filter = { _id: req.params.id };
+    if (team) filter.team = team;
+    if (user) filter.created_by = user;
     
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    // Check if user has access to this order
-    const userOrders = filterOrdersByUser([order], user);
-    if (userOrders.length === 0) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Access denied. No assignments found for your user in this order.' 
-      });
-    }
+    // DEBUG: Log the filter for getOrderById
+    console.log('getOrderById Filter:', filter);
     
-    res.status(200).json({ success: true, data: order });
-  } catch (error) {
-    if (error.kind === 'ObjectId') {
-      return res.status(404).json({ success: false, message: 'Order not found with invalid ID format' });
-    }
-    next(error);
-  }
-};
-
-export const getOrderByNumber = async (req, res, next) => {
-  try {
-    const user = req.user?.user;
-    const { orderNumber } = req.params;
-    
-    if (!user) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User information is required' 
-      });
-    }
-    
-    const order = await Order.findOne({ order_number: orderNumber })
+    const order = await Order.findOne(filter)
       .populate({
         path: 'item_ids',
         populate: {
@@ -134,36 +75,59 @@ export const getOrderByNumber = async (req, res, next) => {
     if (!order) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Order not found with this number' 
+        message: 'Order not found or you do not have permission to view this order' 
       });
     }
-
-    // Check if user has access to this order
-    const userOrders = filterOrdersByUser([order], user);
-    if (userOrders.length === 0) {
-      return res.status(403).json({ 
+    
+    res.status(200).json({ success: true, data: order });
+  } catch (error) {
+    if (error.kind === 'ObjectId') {
+      return res.status(404).json({ 
         success: false, 
-        message: 'Access denied. No assignments found for your user in this order.' 
+        message: 'Order not found with invalid ID format' 
       });
     }
+    next(error);
+  }
+};
 
-    // Transform order to show only user's assignments
+export const getOrderByNumber = async (req, res, next) => {
+  try {
+    const { orderNumber } = req.params;
+    const { team, user } = req.query;
+    
+    // Create filter for team and user
+    let filter = { order_number: orderNumber };
+    if (team) filter.team = team;
+    if (user) filter.created_by = user;
+    
+    // DEBUG: Log the filter for getOrderByNumber
+    console.log('getOrderByNumber Filter:', filter);
+    
+    const order = await Order.findOne(filter)
+      .populate({
+        path: 'item_ids',
+        populate: {
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+        },
+      });
+    
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Order not found with this number or you do not have permission to view this order' 
+      });
+    }
+    
+    // Transform the data to match your frontend expectations
     const transformedOrder = {
       ...order.toObject(),
       items: order.item_ids.map(item => ({
         name: item.name,
-        glass: item.team_assignments.glass?.filter(g => 
-          g.assigned_user === user
-        ) || [],
-        caps: item.team_assignments.caps?.filter(c => 
-          c.assigned_user === user
-        ) || [],
-        boxes: item.team_assignments.boxes?.filter(b => 
-          b.assigned_user === user
-        ) || [],
-        pumps: item.team_assignments.pumps?.filter(p => 
-          p.assigned_user === user
-        ) || []
+        glass: item.team_assignments.glass || [],
+        caps: item.team_assignments.caps || [],
+        boxes: item.team_assignments.boxes || [],
+        pumps: item.team_assignments.pumps || []
       }))
     };
     
@@ -172,7 +136,7 @@ export const getOrderByNumber = async (req, res, next) => {
       data: transformedOrder 
     });
   } catch (error) {
-    console.error('Error fetching order by number:', error);
+    console.error('Error fetching team order by number:', error);
     next(error);
   }
 };
@@ -181,35 +145,24 @@ export const createOrder = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
+  console.log('Request body:', req.body); 
+  console.log('Team:', req.body.team, 'Created_by:', req.body.created_by);
+
   try {
-    const user = req.user?.user;
-    
-    if (!user) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User information is required' 
-      });
-    }
+    const { order_number, dispatcher_name, customer_name, team, created_by, items = [] } = req.body;
 
-    const { 
-      order_number, 
-      dispatcher_name, 
-      customer_name, 
-      items = [] 
-    } = req.body;
-
-    if (!order_number || !dispatcher_name || !customer_name) {
+    if (!order_number || !dispatcher_name || !customer_name || !team || !created_by) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide order_number, dispatcher_name, and customer_name'
+        message: 'order_number, dispatcher_name, customer_name, team, and created_by are required',
       });
     }
 
-    const orderExists = await Order.findOne({ order_number });
+    const orderExists = await Order.findOne({ order_number, team });
     if (orderExists) {
       return res.status(400).json({
         success: false,
-        message: `Order with number ${order_number} already exists`
+        message: `Order number ${order_number} already exists for team ${team}`,
       });
     }
 
@@ -217,9 +170,12 @@ export const createOrder = async (req, res, next) => {
       order_number,
       dispatcher_name,
       customer_name,
+      team,
+      created_by,
       order_status: req.body.order_status || 'Pending',
-      item_ids: []
+      item_ids: [],
     });
+
     await newOrder.save({ session });
 
     const itemIds = [];
@@ -232,125 +188,119 @@ export const createOrder = async (req, res, next) => {
           glass: [],
           caps: [],
           boxes: [],
-          pumps: []
-        }
+          pumps: [],
+          marketing: [], // Keep this as part of OrderItem schema
+        },
       });
-      
+
       await orderItem.save({ session });
       itemIds.push(orderItem._id);
 
-      // Create glass assignments
-      if (item.glass && item.glass.length > 0) {
-        for (const glassData of item.glass) {
+      // Save glass items
+      if (item.glass?.length) {
+        for (const g of item.glass) {
           const glassItem = new GlassItem({
             itemId: orderItem._id,
             orderNumber: order_number,
-            glass_name: glassData.glass_name,
-            quantity: glassData.quantity,
-            weight: glassData.weight,
-            neck_size: glassData.neck_size,
-            decoration: glassData.decoration,
-            decoration_no: glassData.decoration_no,
-            decoration_details: glassData.decoration_details,
-            team: glassData.team || 'Glass',
-            assigned_user: user,
+            glass_name: g.glass_name,
+            quantity: g.quantity,
+            weight: g.weight,
+            neck_size: g.neck_size,
+            decoration: g.decoration,
+            decoration_no: g.decoration_no,
+            decoration_details: g.decoration_details,
+            team: g.team || 'Glass',
             status: 'Pending',
-            team_tracking: {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
+            team_tracking: { total_completed_qty: 0, completed_entries: [], status: 'Pending' },
           });
-          
           await glassItem.save({ session });
           orderItem.team_assignments.glass.push(glassItem._id);
         }
       }
-      
-      // Create caps assignments
-      if (item.caps && item.caps.length > 0) {
-        for (const capData of item.caps) {
+
+      // Save caps
+      if (item.caps?.length) {
+        for (const c of item.caps) {
           const capItem = new CapItem({
             itemId: orderItem._id,
             orderNumber: order_number,
-            cap_name: capData.cap_name,
-            neck_size: capData.neck_size,
-            quantity: capData.quantity,
-            process: capData.process,
-            material: capData.material,
-            team: capData.team || 'Cap',
-            assigned_user: user,
+            cap_name: c.cap_name,
+            neck_size: c.neck_size,
+            quantity: c.quantity,
+            process: c.process,
+            material: c.material,
+            team: c.team || 'Caps',
             status: 'Pending',
-            team_tracking: {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
+            team_tracking: { total_completed_qty: 0, completed_entries: [], status: 'Pending' },
           });
-          
           await capItem.save({ session });
           orderItem.team_assignments.caps.push(capItem._id);
         }
       }
-      
-      // Create boxes assignments
-      if (item.boxes && item.boxes.length > 0) {
-        for (const boxData of item.boxes) {
+
+      // Save boxes
+      if (item.boxes?.length) {
+        for (const b of item.boxes) {
           const boxItem = new BoxItem({
             itemId: orderItem._id,
             orderNumber: order_number,
-            box_name: boxData.box_name,
-            quantity: boxData.quantity,
-            approval_code: boxData.approval_code,
-            team: boxData.team || 'Box',
-            assigned_user: user,
+            box_name: b.box_name,
+            quantity: b.quantity,
+            approval_code: b.approval_code,
+            team: b.team || 'Boxes',
             status: 'Pending',
-            team_tracking: {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
+            team_tracking: { total_completed_qty: 0, completed_entries: [], status: 'Pending' },
           });
-          
           await boxItem.save({ session });
           orderItem.team_assignments.boxes.push(boxItem._id);
         }
       }
-      
-      // Create pumps assignments
-      if (item.pumps && item.pumps.length > 0) {
-        for (const pumpData of item.pumps) {
+
+      // Save pumps
+      if (item.pumps?.length) {
+        for (const p of item.pumps) {
           const pumpItem = new PumpItem({
             itemId: orderItem._id,
             orderNumber: order_number,
-            pump_name: pumpData.pump_name,
-            neck_type: pumpData.neck_type,
-            quantity: pumpData.quantity,
-            team: pumpData.team || 'Pump',
-            assigned_user: user,
+            pump_name: p.pump_name,
+            neck_type: p.neck_type,
+            quantity: p.quantity,
+            team: p.team || 'Pumps',
             status: 'Pending',
-            team_tracking: {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
+            team_tracking: { total_completed_qty: 0, completed_entries: [], status: 'Pending' },
           });
-          
           await pumpItem.save({ session });
           orderItem.team_assignments.pumps.push(pumpItem._id);
         }
       }
-      
+
+      // Handle marketing items - store directly in OrderItem schema, not as separate model
+      if (item.marketing?.length) {
+        const marketingItems = item.marketing.map(m => ({
+          marketing_name: m.marketing_name,
+          quantity: m.quantity,
+          campaign_type: m.campaign_type,
+          target_audience: m.target_audience,
+          budget: m.budget,
+          timeline: m.timeline,
+          team: m.team || 'Marketing',
+          status: 'Pending',
+          team_tracking: { total_completed_qty: 0, completed_entries: [], status: 'Pending' },
+        }));
+        
+        orderItem.team_assignments.marketing = marketingItems;
+      }
+
       await orderItem.save({ session });
     }
-  
+
     newOrder.item_ids = itemIds;
     await newOrder.save({ session });
-    
+
     await session.commitTransaction();
     session.endSession();
 
-    // Fetch the fully populated order after creation
+    // Populate for returning full details
     const populatedOrder = await Order.findById(newOrder._id)
       .populate({
         path: 'item_ids',
@@ -358,51 +308,63 @@ export const createOrder = async (req, res, next) => {
           path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
         },
       });
-    
-    res.status(201).json({ 
-      success: true, 
-      message: 'Order created successfully',
-      data: populatedOrder 
+
+    res.status(201).json({
+      success: true,
+      message: 'Team order created successfully',
+      data: populatedOrder,
     });
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+
+    console.error('Error creating order:', error);
     
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
-        message: 'Duplicate key error. Order number must be unique.'
+        message: 'Duplicate key error: Order number must be unique within the team.',
       });
     }
-    
+
+    // Log validation errors for debugging
+    if (error.name === 'ValidationError') {
+      console.error('Validation Error Details:', error.errors);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation Error: ' + Object.keys(error.errors).map(key => `${key}: ${error.errors[key].message}`).join(', '),
+      });
+    }
+
     next(error);
   }
 };
+
+
+// ... (rest of the functions remain the same as your original code)
 
 export const updateOrder = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const user = req.user?.user;
-    
-    if (!user) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User information is required' 
-      });
-    }
-
     const { 
       order_number, 
       dispatcher_name, 
       customer_name, 
       order_status,
+      team,
+      created_by,
       items = [] 
     } = req.body;
 
+    // Create filter for team and user permissions
+    let filter = { _id: req.params.id };
+    if (req.query.team) filter.team = req.query.team;
+    if (req.query.user) filter.created_by = req.query.user;
+
     // Find the existing order with populated data
-    const existingOrder = await Order.findById(req.params.id)
+    const existingOrder = await Order.findOne(filter)
       .populate({
         path: 'item_ids',
         populate: {
@@ -411,36 +373,31 @@ export const updateOrder = async (req, res, next) => {
       });
       
     if (!existingOrder) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    // Check if user has access to this order
-    const userOrders = filterOrdersByUser([existingOrder], user);
-    if (userOrders.length === 0) {
-      return res.status(403).json({ 
+      return res.status(404).json({ 
         success: false, 
-        message: 'Access denied. No assignments found for your user in this order.' 
+        message: 'Order not found or you do not have permission to update this order' 
       });
     }
 
     // Store the OLD order number before updating
     const oldOrderNumber = existingOrder.order_number;
 
-    // Check if new order number conflicts with other orders
+    // Check if new order number conflicts with other orders in the same team
     if (order_number && order_number !== oldOrderNumber) {
       const orderExists = await Order.findOne({ 
         order_number, 
+        team: existingOrder.team,
         _id: { $ne: req.params.id } 
       });
       if (orderExists) {
         return res.status(400).json({
           success: false,
-          message: `Order with number ${order_number} already exists`
+          message: `Order with number ${order_number} already exists in team ${existingOrder.team}`
         });
       }
     }
 
-    // Preserve existing tracking data for this user
+    // Preserve existing tracking data
     const existingTrackingData = new Map();
     
     if (existingOrder.item_ids) {
@@ -456,14 +413,11 @@ export const updateOrder = async (req, res, next) => {
         ['glass', 'caps', 'boxes', 'pumps'].forEach(teamType => {
           if (item.team_assignments?.[teamType]) {
             item.team_assignments[teamType].forEach(assignment => {
-              // Preserve tracking data only for this user
-              if (assignment.assigned_user === user) {
-                const assignmentKey = getAssignmentKey(assignment, teamType);
-                existingTrackingData.get(itemKey)[teamType][assignmentKey] = {
-                  team_tracking: assignment.team_tracking,
-                  status: assignment.status
-                };
-              }
+              const assignmentKey = getAssignmentKey(assignment, teamType);
+              existingTrackingData.get(itemKey)[teamType][assignmentKey] = {
+                team_tracking: assignment.team_tracking,
+                status: assignment.status
+              };
             });
           }
         });
@@ -485,46 +439,51 @@ export const updateOrder = async (req, res, next) => {
       }
     }
 
-    // Update order basic info
+    // Update order basic info (preserve team and created_by unless explicitly changed)
     existingOrder.order_number = order_number || existingOrder.order_number;
     existingOrder.dispatcher_name = dispatcher_name || existingOrder.dispatcher_name;
     existingOrder.customer_name = customer_name || existingOrder.customer_name;
     existingOrder.order_status = order_status || existingOrder.order_status;
+    existingOrder.team = team || existingOrder.team;
+    existingOrder.created_by = created_by || existingOrder.created_by;
 
-    // Delete only this user's assignments
+    // Delete OrderItems using the OLD order number
     const existingOrderItems = await OrderItem.find({ order_number: oldOrderNumber });
     
     for (const item of existingOrderItems) {
-      await GlassItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
-      await CapItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
-      await BoxItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
-      await PumpItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
+      await GlassItem.deleteMany({ itemId: item._id }, { session });
+      await CapItem.deleteMany({ itemId: item._id }, { session });
+      await BoxItem.deleteMany({ itemId: item._id }, { session });
+      await PumpItem.deleteMany({ itemId: item._id }, { session });
+      await item.deleteOne({ session });
     }
 
-    // Create new assignments
+    // Clear the item_ids array
+    existingOrder.item_ids = [];
+
+    // Create new order items with NEW order number and preserved tracking data
+    const itemIds = [];
+
     for (const item of items) {
-      let orderItem = await OrderItem.findOne({ order_number: existingOrder.order_number, name: item.name });
+      const orderItem = new OrderItem({
+        order_number: existingOrder.order_number,
+        name: item.name || `Item for ${existingOrder.order_number}`,
+        team_assignments: {
+          glass: [],
+          caps: [],
+          boxes: [],
+          pumps: []
+        }
+      });
       
-      if (!orderItem) {
-        orderItem = new OrderItem({
-          order_number: existingOrder.order_number,
-          name: item.name || `Item for ${existingOrder.order_number}`,
-          team_assignments: {
-            glass: [],
-            caps: [],
-            boxes: [],
-            pumps: []
-          }
-        });
-        await orderItem.save({ session });
-        existingOrder.item_ids.push(orderItem._id);
-      }
+      await orderItem.save({ session });
+      itemIds.push(orderItem._id);
 
       const existingItemTracking = existingTrackingData.get(item.name) || {
         glass: {}, caps: {}, boxes: {}, pumps: {}
       };
 
-      // Handle glass assignments with preserved tracking
+      // Handle Glass Items with preserved tracking
       if (item.glass && item.glass.length > 0) {
         for (const glassData of item.glass) {
           const assignmentKey = getAssignmentKey(glassData, 'glass');
@@ -540,8 +499,7 @@ export const updateOrder = async (req, res, next) => {
             decoration: glassData.decoration,
             decoration_no: glassData.decoration_no,
             decoration_details: glassData.decoration_details,
-            team: glassData.team || 'Glass',
-            assigned_user: user,
+            team: glassData.team || 'Glass Manufacturing - Mumbai',
             status: existingTracking?.status || glassData.status || 'Pending',
             team_tracking: existingTracking?.team_tracking || glassData.team_tracking || {
               total_completed_qty: 0,
@@ -555,7 +513,7 @@ export const updateOrder = async (req, res, next) => {
         }
       }
       
-      // Handle caps assignments
+      // Handle Cap Items with preserved tracking
       if (item.caps && item.caps.length > 0) {
         for (const capData of item.caps) {
           const assignmentKey = getAssignmentKey(capData, 'caps');
@@ -569,8 +527,7 @@ export const updateOrder = async (req, res, next) => {
             quantity: capData.quantity,
             process: capData.process,
             material: capData.material,
-            team: capData.team || 'Cap',
-            assigned_user: user,
+            team: capData.team || 'Cap Manufacturing - Delhi',
             status: existingTracking?.status || capData.status || 'Pending',
             team_tracking: existingTracking?.team_tracking || capData.team_tracking || {
               total_completed_qty: 0,
@@ -584,7 +541,7 @@ export const updateOrder = async (req, res, next) => {
         }
       }
       
-      // Handle boxes assignments
+      // Handle Box Items with preserved tracking
       if (item.boxes && item.boxes.length > 0) {
         for (const boxData of item.boxes) {
           const assignmentKey = getAssignmentKey(boxData, 'boxes');
@@ -596,8 +553,7 @@ export const updateOrder = async (req, res, next) => {
             box_name: boxData.box_name,
             quantity: boxData.quantity,
             approval_code: boxData.approval_code,
-            team: boxData.team || 'Box',
-            assigned_user: user,
+            team: boxData.team || 'Box Manufacturing - Pune',
             status: existingTracking?.status || boxData.status || 'Pending',
             team_tracking: existingTracking?.team_tracking || boxData.team_tracking || {
               total_completed_qty: 0,
@@ -611,7 +567,7 @@ export const updateOrder = async (req, res, next) => {
         }
       }
       
-      // Handle pumps assignments
+      // Handle Pump Items with preserved tracking
       if (item.pumps && item.pumps.length > 0) {
         for (const pumpData of item.pumps) {
           const assignmentKey = getAssignmentKey(pumpData, 'pumps');
@@ -623,8 +579,7 @@ export const updateOrder = async (req, res, next) => {
             pump_name: pumpData.pump_name,
             neck_type: pumpData.neck_type,
             quantity: pumpData.quantity,
-            team: pumpData.team || 'Pump',
-            assigned_user: user,
+            team: pumpData.team || 'Pump Manufacturing - Chennai',
             status: existingTracking?.status || pumpData.status || 'Pending',
             team_tracking: existingTracking?.team_tracking || pumpData.team_tracking || {
               total_completed_qty: 0,
@@ -641,6 +596,8 @@ export const updateOrder = async (req, res, next) => {
       await orderItem.save({ session });
     }
 
+    // Update the order with new item IDs
+    existingOrder.item_ids = itemIds;
     await existingOrder.save({ session });
     
     await session.commitTransaction();
@@ -657,7 +614,7 @@ export const updateOrder = async (req, res, next) => {
     
     res.status(200).json({ 
       success: true, 
-      message: 'Order updated successfully',
+      message: 'Team order updated successfully',
       data: populatedOrder 
     });
   } catch (error) {
@@ -667,7 +624,7 @@ export const updateOrder = async (req, res, next) => {
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
-        message: 'Duplicate key error. Order number must be unique.'
+        message: 'Duplicate key error. Order number must be unique within the team.'
       });
     }
     
@@ -680,54 +637,38 @@ export const deleteOrder = async (req, res, next) => {
   session.startTransaction();
   
   try {
-    const user = req.user?.user;
+    const { team, user } = req.query;
     
-    if (!user) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User information is required' 
-      });
-    }
-
-    const order = await Order.findById(req.params.id);
+    // Create filter for team and user permissions
+    let filter = { _id: req.params.id };
+    if (team) filter.team = team;
+    if (user) filter.created_by = user;
+    
+    const order = await Order.findOne(filter);
     
     if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    // Check if user has access to this order
-    const populatedOrder = await Order.findById(req.params.id)
-      .populate({
-        path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-        },
-      });
-
-    const userOrders = filterOrdersByUser([populatedOrder], user);
-    if (userOrders.length === 0) {
-      return res.status(403).json({ 
+      return res.status(404).json({ 
         success: false, 
-        message: 'Access denied. No assignments found for your user in this order.' 
+        message: 'Order not found or you do not have permission to delete this order' 
       });
     }
-
-    // User can only delete their own assignments
+    
     const orderItems = await OrderItem.find({ order_number: order.order_number });
     
     for (const item of orderItems) {
-      await GlassItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
-      await CapItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
-      await BoxItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
-      await PumpItem.deleteMany({ itemId: item._id, assigned_user: user }, { session });
+      await GlassItem.deleteMany({ itemId: item._id }, { session });
+      await CapItem.deleteMany({ itemId: item._id }, { session });      
+      await BoxItem.deleteMany({ itemId: item._id }, { session });
+      await PumpItem.deleteMany({ itemId: item._id }, { session });
+      await item.deleteOne({ session });
     }
-
+    await order.deleteOne({ session });
     await session.commitTransaction();
     session.endSession();
     
     res.status(200).json({ 
       success: true, 
-      message: 'Your assignments deleted successfully' 
+      message: 'Team order deleted successfully' 
     });
   } catch (error) {
     await session.abortTransaction();
@@ -736,68 +677,31 @@ export const deleteOrder = async (req, res, next) => {
   }
 };
 
-
 export const createOrderItem = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   
   try {
-    const userInfo = {
-      user: req.user?.user,
-      role: req.user?.role
-    };
     const { order_id } = req.params;
+    const { team, user } = req.query;
     
-    if (!userInfo.user || !userInfo.role) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User information (user, role) is required' 
-      });
-    }
-
-    const order = await Order.findById(order_id);
+    // Create filter for team and user permissions
+    let filter = { _id: order_id };
+    if (team) filter.team = team;
+    if (user) filter.created_by = user;
+    
+    const order = await Order.findOne(filter);
     
     if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    // Check access based on role
-    if (userInfo.role !== 'admin' && userInfo.role !== 'dispatcher') {
-      const populatedOrder = await Order.findById(order_id)
-        .populate({
-          path: 'item_ids',
-          populate: {
-            path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-          },
-        });
-
-      const userOrders = filterOrdersByUser([populatedOrder], userInfo);
-      if (userOrders.length === 0) {
-        return res.status(403).json({ 
-          success: false, 
-         message: 'Access denied. No assignments found for your user in this order.' 
-        });
-      }
-    }
-
-    const { 
-      name,
-      glass = [],
-      caps = [],
-      boxes = [],
-      pumps = []
-    } = req.body;
-
-    if (!name) {
-      return res.status(400).json({
-        success: false,
-        message: 'Item name is required'
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Order not found or you do not have permission to modify this order' 
       });
     }
-
+    
     const orderItem = new OrderItem({
+      ...req.body,
       order_number: order.order_number,
-      name,
       team_assignments: {
         glass: [],
         caps: [],
@@ -807,121 +711,19 @@ export const createOrderItem = async (req, res, next) => {
     });
     
     await orderItem.save({ session });
-
-
-    if (glass.length > 0) {
-      for (const glassData of glass) {
-        const glassItem = new GlassItem({
-          itemId: orderItem._id,
-          orderNumber: order.order_number,
-          glass_name: glassData.glass_name,
-          quantity: glassData.quantity,
-          weight: glassData.weight,
-          neck_size: glassData.neck_size,
-          decoration: glassData.decoration,
-          decoration_no: glassData.decoration_no,
-          decoration_details: glassData.decoration_details,
-          team: glassData.team || 'Glass',
-          assigned_user: glassData.assigned_user || (userInfo.role === 'team' ? userInfo.user : null),
-          status: 'Pending',
-          team_tracking: {
-            total_completed_qty: 0,
-            completed_entries: [],
-            status: 'Pending'
-          }
-        });
-        
-        await glassItem.save({ session });
-        orderItem.team_assignments.glass.push(glassItem._id);
-      }
-    }
-    
-    if (caps.length > 0) {
-      for (const capData of caps) {
-        const capItem = new CapItem({
-          itemId: orderItem._id,
-          orderNumber: order.order_number,
-          cap_name: capData.cap_name,
-          neck_size: capData.neck_size,
-          quantity: capData.quantity,
-          process: capData.process,
-          material: capData.material,
-          team: capData.team || 'Cap',
-          assigned_user: capData.assigned_user || (userInfo.role === 'team' ? userInfo.user : null),
-          status: 'Pending',
-          team_tracking: {
-            total_completed_qty: 0,
-            completed_entries: [],
-            status: 'Pending'
-          }
-        });
-        
-        await capItem.save({ session });
-        orderItem.team_assignments.caps.push(capItem._id);
-      }
-    }
-    
-    if (boxes.length > 0) {
-      for (const boxData of boxes) {
-        const boxItem = new BoxItem({
-          itemId: orderItem._id,
-          orderNumber: order.order_number,
-          box_name: boxData.box_name,
-          quantity: boxData.quantity,
-          approval_code: boxData.approval_code,
-          team: boxData.team || 'Box',
-          assigned_user: boxData.assigned_user || (userInfo.role === 'team' ? userInfo.user : null),
-          status: 'Pending',
-          team_tracking: {
-            total_completed_qty: 0,
-            completed_entries: [],
-            status: 'Pending'
-          }
-        });
-        
-        await boxItem.save({ session });
-        orderItem.team_assignments.boxes.push(boxItem._id);
-      }
-    }
-    
-    if (pumps.length > 0) {
-      for (const pumpData of pumps) {
-        const pumpItem = new PumpItem({
-          itemId: orderItem._id,
-          orderNumber: order.order_number,
-          pump_name: pumpData.pump_name,
-          neck_type: pumpData.neck_type,
-          quantity: pumpData.quantity,
-          team: pumpData.team || 'Pump',
-          assigned_user: pumpData.assigned_user || (userInfo.role === 'team' ? userInfo.user : null),
-          status: 'Pending',
-          team_tracking: {
-            total_completed_qty: 0,
-            completed_entries: [],
-            status: 'Pending'
-          }
-        });
-        
-        await pumpItem.save({ session });
-        orderItem.team_assignments.pumps.push(pumpItem._id);
-      }
-    }
-    
-    await orderItem.save({ session });
     
     order.item_ids.push(orderItem._id);
     await order.save({ session });
     
     await session.commitTransaction();
     session.endSession();
-
-    const populatedOrderItem = await OrderItem.findById(orderItem._id)
+    
+    const populatedItem = await OrderItem.findById(orderItem._id)
       .populate('team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps');
     
     res.status(201).json({ 
       success: true, 
-      message: 'Order item created successfully',
-      data: populatedOrderItem 
+      data: populatedItem 
     });
   } catch (error) {
     await session.abortTransaction();

@@ -12,7 +12,7 @@ router.post('/login', (req, res) => {
   }
   const token = jwt.sign(
     { 
-      username: user.username,
+      username: user.user,
       role: user.role,
       subteam: user.subteam,
       team: user.team
@@ -22,7 +22,7 @@ router.post('/login', (req, res) => {
   );
 
   return res.status(200).json({
-    username: user.username,
+    username: user.user,
     role: user.role,
     subteam: user.subteam,
     team: user.team,

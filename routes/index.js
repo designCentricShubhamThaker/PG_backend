@@ -11,12 +11,14 @@ import pumpDataRoutes from './pumpDataRoutes.js';
 import capDataRoutes from './capDataRoutes.js'; 
 import boxDataRoutes from './boxDataRoutes.js'; 
 import customerRoutes from './customerRoutes.js'; 
+import TeamOrderRoutes from './TeamOrderRoutes.js'; 
 
 
 const router = express.Router();
 
 
 router.use('/orders', orderRoutes);
+router.use('/team-orders', TeamOrderRoutes);
 router.use('/glass', glassRoutes);
 router.use('/caps', capRoutes);
 router.use('/boxes', boxRoutes);
