@@ -55,7 +55,7 @@ export const users = [
     subteam: "foil"
   },
   {
-    user: "pump",
+    user: "pump_team",
     password: "pg@pump",
     role: "user",
     team:"pump"
@@ -64,7 +64,7 @@ export const users = [
     user: "box_team",
     password: "pg@box",
     role: "user",
-    team:"box"
+    team:"boxes"
   },
 
   {

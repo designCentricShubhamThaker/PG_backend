@@ -1,12 +1,14 @@
 import express from 'express';
 import {
-getBoxOrders
+getBoxOrders,
+updateBoxTracking
 } from '../controllers/boxController.js';
 
 const router = express.Router();
 
 router.route('/')
-  .get(getBoxOrders);
+  .get(getBoxOrders)
+  .patch(updateBoxTracking)
 
 
 

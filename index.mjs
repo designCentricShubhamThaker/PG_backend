@@ -79,46 +79,64 @@ io.on('connection', (socket) => {
     broadcastConnectedUsers();
   });
 
-  socket.on('new-order-created', (orderData) => {
-    console.log('📦 New order notification received:', orderData.orderNumber);
+ socket.on('new-order-created', (orderData) => {
+  console.log('📦 New order notification received:', orderData.orderNumber);
 
-    try {
-      const { order, assignedTeams, dispatcherName, customerName, orderNumber, timestamp } = orderData;
+  try {
+    const { order, assignedTeams, dispatcherName, customerName, orderNumber, timestamp } = orderData;
 
-      const baseNotification = {
-        type: 'new-order',
-        orderNumber,
-        customerName,
-        dispatcherName,
-        timestamp,
-        message: `New order #${orderNumber} created for ${customerName}`
-      };
+    // DEBUG: Log the assigned teams and team members
+    console.log('🔍 Assigned Teams:', assignedTeams);
+    console.log('🔍 Available Team Members:', Object.keys(teamMembers));
+    console.log('🔍 Team Members Sizes:', {
+      dispatchers: teamMembers.dispatchers.size,
+      glass: teamMembers.glass.size,
+      caps: teamMembers.caps.size,
+      boxes: teamMembers.boxes.size,
+      pumps: teamMembers.pumps.size
+    });
 
-      // Send full order to dispatchers
-      io.to('dispatchers').emit('new-order', {
-        ...baseNotification,
-        orderData: order
-      });
+    const baseNotification = {
+      type: 'new-order',
+      orderNumber,
+      customerName,
+      dispatcherName,
+      timestamp,
+      message: `New order #${orderNumber} created for ${customerName}`
+    };
 
-      // Send filtered data to each team
-      assignedTeams.forEach(teamName => {
-        if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
-          const filteredOrder = filterOrderForTeam(order, teamName);
+    // Send full order to dispatchers
+    io.to('dispatchers').emit('new-order', {
+      ...baseNotification,
+      orderData: order
+    });
 
-          io.to(teamName).emit('new-order', {
-            ...baseNotification,
-            message: `New order #${orderNumber} assigned to ${teamName.toUpperCase()} team`,
-            orderData: filteredOrder
-          });
+    // Send filtered data to each team
+    assignedTeams.forEach(teamName => {
+      console.log(`🔍 Checking team: ${teamName}`);
+      console.log(`🔍 Team exists in teamMembers: ${!!teamMembers[teamName]}`);
+      console.log(`🔍 Team has members: ${teamMembers[teamName]?.size || 0}`);
+      
+      if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
+        const filteredOrder = filterOrderForTeam(order, teamName);
+        console.log(`🔍 Filtered order for ${teamName}:`, JSON.stringify(filteredOrder, null, 2));
 
-          console.log(`📤 Filtered order sent to ${teamName} team`);
-        }
-      });
+        io.to(teamName).emit('new-order', {
+          ...baseNotification,
+          message: `New order #${orderNumber} assigned to ${teamName.toUpperCase()} team`,
+          orderData: filteredOrder
+        });
 
-    } catch (error) {
-      console.error('Error handling order notification:', error);
-    }
-  });
+        console.log(`📤 Filtered order sent to ${teamName} team`);
+      } else {
+        console.log(`❌ No members found for team: ${teamName}`);
+      }
+    });
+
+  } catch (error) {
+    console.error('Error handling order notification:', error);
+  }
+});
 
 
   socket.on('team-progress-updated', (progressData) => {

@@ -10,12 +10,7 @@ const OrderItemSchema = new mongoose.Schema({
     pumps: [{ type: mongoose.Schema.Types.ObjectId, ref: 'PumpItem' }]
   },
 
-  team_status: {
-    glass: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' },
-    caps: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' },
-    boxes: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' },
-    pumps: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' }
-  }
+
 }, { timestamps: true });
 
 export default mongoose.model('OrderItem', OrderItemSchema);
