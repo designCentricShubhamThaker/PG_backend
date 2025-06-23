@@ -12,6 +12,7 @@ import capDataRoutes from './capDataRoutes.js';
 import boxDataRoutes from './boxDataRoutes.js'; 
 import customerRoutes from './customerRoutes.js'; 
 import TeamOrderRoutes from './TeamOrderRoutes.js'; 
+import decorationRoutes from './decorationRoutes.js'; 
 
 
 const router = express.Router();
@@ -30,5 +31,6 @@ router.use('/pumpdata', pumpDataRoutes)
 router.use('/capdata', capDataRoutes)
 router.use('/boxdata', boxDataRoutes)
 router.use('/customer', customerRoutes)
+router.use('/decoration', decorationRoutes)
 
 export default router;

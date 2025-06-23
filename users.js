@@ -28,14 +28,14 @@ export const users = [
   },
   {
     user: 'deco_print',
-    password: "pg@deco_print",
+    password: "pg@print",
     role: 'user',
     team: "decoration",
     subteam: "deco_print"
   },
   {
     user: 'deco_frost',
-    password: "pg@deco_frost",
+    password: "pg@frost",
     role: 'user',
     team: "decoration",
     subteam: "frost"
@@ -48,7 +48,7 @@ export const users = [
     subteam: "deco_coat"
   },
   {
-    user: 'foiling',
+    user: 'deco_foil',
     password: "pg@foil",
     role: 'user',
     team: "decoration",
