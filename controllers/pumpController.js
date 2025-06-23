@@ -1,5 +1,7 @@
+import Order from '../models/Order.js';
 import PumpItem from '../models/PumpItem.js';
 import OrderItem from '../models/OrderItem.js';
+import mongoose from 'mongoose';
 
 // Get all pump items
 export const getAllPumpItems = async (req, res, next) => {
@@ -11,122 +13,210 @@ export const getAllPumpItems = async (req, res, next) => {
   }
 };
 
-// Get pump item by ID
-export const getPumpItemById = async (req, res, next) => {
-  try {
-    const pumpItem = await PumpItem.findById(req.params.id);
-    
-    if (!pumpItem) {
-      return res.status(404).json({ success: false, message: 'Pump item not found' });
-    }
-    
-    res.status(200).json({ success: true, data: pumpItem });
-  } catch (error) {
-    next(error);
-  }
-};
 
-// Create new pump item
-export const createPumpItem = async (req, res, next) => {
+export const updatePumpTracking = async (req, res, next) => {
+  const session = await mongoose.startSession();
+
   try {
-    const { orderItem_id } = req.params;
-    const orderItem = await OrderItem.findById(orderItem_id);
-    
-    if (!orderItem) {
-      return res.status(404).json({ success: false, message: 'Order item not found' });
+    const { orderNumber, itemId, updates, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
+
+    const isBulkUpdate = Array.isArray(updates) && updates.length > 0;
+    const isSingleUpdate = assignmentId && newEntry && newTotalCompleted !== undefined && newStatus;
+
+    if (!orderNumber || !itemId || (!isBulkUpdate && !isSingleUpdate)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields.'
+      });
     }
-    
-    const pumpItem = new PumpItem({
-      ...req.body,
-      itemId: orderItem._id,
-      orderNumber: orderItem.order_number
+
+    const updatesArray = isBulkUpdate ? updates : [{ assignmentId, newEntry, newTotalCompleted, newStatus }];
+
+    await session.withTransaction(async () => {
+      const item = await OrderItem.findById(itemId)
+        .populate('team_assignments.pumps')
+        .session(session);
+
+      if (!item) throw new Error('Item not found');
+
+      const pumpAssignments = item.team_assignments?.pumps || [];
+
+      for (const update of updatesArray) {
+        const assignment = pumpAssignments.find(a => a._id.toString() === update.assignmentId);
+        if (!assignment) throw new Error(`Pump assignment not found: ${update.assignmentId}`);
+
+        const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
+        const remaining = assignment.quantity - currentCompleted;
+
+        if (update.newEntry.quantity > remaining) {
+          throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for pump ${assignment.pump_name}`);
+        }
+
+        await PumpItem.findByIdAndUpdate(
+          update.assignmentId,
+          {
+            $set: {
+              'team_tracking.total_completed_qty': update.newTotalCompleted,
+              'team_tracking.last_updated': new Date(),
+              status: update.newStatus
+            },
+            $push: {
+              'team_tracking.completed_entries': {
+                ...update.newEntry,
+                date: new Date(update.newEntry.date)
+              }
+            }
+          },
+          { session, new: true }
+        );
+      }
+
+      // Check item completion
+      const itemCompletionResult = await OrderItem.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
+        {
+          $lookup: {
+            from: 'pumpitems',
+            localField: 'team_assignments.pumps',
+            foreignField: '_id',
+            as: 'pump_assignments'
+          }
+        },
+        {
+          $addFields: {
+            allPumpsCompleted: {
+              $allElementsTrue: {
+                $map: {
+                  input: '$pump_assignments',
+                  as: 'assignment',
+                  in: {
+                    $gte: [
+                      { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
+                      '$$assignment.quantity'
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        { $project: { allPumpsCompleted: 1 } }
+      ]).session(session);
+
+      if (itemCompletionResult[0]?.allPumpsCompleted) {
+        await OrderItem.findByIdAndUpdate(
+          itemId,
+          { $set: { 'team_status.pumps': 'Completed' } },
+          { session }
+        );
+
+        const orderCompletionResult = await Order.aggregate([
+          { $match: { order_number: orderNumber } },
+          {
+            $lookup: {
+              from: 'orderitems',
+              localField: 'item_ids',
+              foreignField: '_id',
+              as: 'items',
+              pipeline: [
+                {
+                  $lookup: {
+                    from: 'pumpitems',
+                    localField: 'team_assignments.pumps',
+                    foreignField: '_id',
+                    as: 'pump_assignments'
+                  }
+                }
+              ]
+            }
+          },
+          {
+            $addFields: {
+              allItemsCompleted: {
+                $allElementsTrue: {
+                  $map: {
+                    input: '$items',
+                    as: 'item',
+                    in: {
+                      $cond: {
+                        if: { $gt: [{ $size: '$$item.pump_assignments' }, 0] },
+                        then: {
+                          $allElementsTrue: {
+                            $map: {
+                              input: '$$item.pump_assignments',
+                              as: 'assignment',
+                              in: {
+                                $gte: [
+                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
+                                  '$$assignment.quantity'
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        else: true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          { $project: { allItemsCompleted: 1, order_status: 1 } }
+        ]).session(session);
+
+        const orderResult = orderCompletionResult[0];
+        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
+          await Order.findOneAndUpdate(
+            { order_number: orderNumber },
+            { $set: { order_status: 'Completed' } },
+            { session }
+          );
+        }
+      }
     });
-    
-    await pumpItem.save();
-    
-    // Add pump item to order item's team assignments
-    orderItem.team_assignments.pumps.push(pumpItem._id);
-    await orderItem.save();
-    
-    res.status(201).json({ success: true, data: pumpItem });
-  } catch (error) {
-    next(error);
-  }
-};
 
-// Update pump item
-export const updatePumpItem = async (req, res, next) => {
-  try {
-    const pumpItem = await PumpItem.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true
+    const updatedOrder = await Order.findOne({ order_number: orderNumber })
+      .populate({
+        path: 'item_ids',
+        match: { 'team_assignments.pumps': { $exists: true, $ne: [] } },
+        populate: {
+          path: 'team_assignments.pumps',
+          model: 'PumpItem'
+        }
+      })
+      .lean();
+
+    const responseData = {
+      ...updatedOrder,
+      item_ids: updatedOrder.item_ids.map(item => ({
+        ...item,
+        team_assignments: { pumps: item.team_assignments.pumps }
+      }))
+    };
+
+    const updatedAssignments = updatesArray.map(update => ({
+      assignmentId: update.assignmentId,
+      newStatus: update.newStatus,
+      totalCompleted: update.newTotalCompleted
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: 'Pump tracking updated successfully',
+      data: {
+        order: responseData,
+        updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
+      }
     });
-    
-    if (!pumpItem) {
-      return res.status(404).json({ success: false, message: 'Pump item not found' });
-    }
-    
-    res.status(200).json({ success: true, data: pumpItem });
   } catch (error) {
+    console.error('Error updating pump tracking:', error);
+    if (error.message.includes('not found') || error.message.includes('exceeds')) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     next(error);
+  } finally {
+    await session.endSession();
   }
 };
-
-// Update pump item team tracking
-export const updatePumpItemTracking = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { qty_completed, updated_by } = req.body;
-    
-    const pumpItem = await PumpItem.findById(id);
-    
-    if (!pumpItem) {
-      return res.status(404).json({ success: false, message: 'Pump item not found' });
-    }
-    
-    // Add completed entry
-    pumpItem.team_tracking.completed_entries.push({
-      qty_completed,
-      updated_by,
-      timestamp: new Date()
-    });
-    
-    // Update total completed quantity
-    pumpItem.team_tracking.total_completed_qty += qty_completed;
-    
-    // Check if completed
-    if (pumpItem.team_tracking.total_completed_qty >= pumpItem.quantity) {
-      pumpItem.team_tracking.status = 'Completed';
-      pumpItem.status = 'Done';
-    }
-    
-    await pumpItem.save();
-    
-    res.status(200).json({ success: true, data: pumpItem });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Delete pump item
-export const deletePumpItem = async (req, res, next) => {
-  try {
-    const pumpItem = await PumpItem.findById(req.params.id);
-    
-    if (!pumpItem) {
-      return res.status(404).json({ success: false, message: 'Pump item not found' });
-    }
-    
-    // Remove reference from order item
-    await OrderItem.updateOne(
-      { _id: pumpItem.itemId },
-      { $pull: { 'team_assignments.pumps': pumpItem._id } }
-    );
-    
-    await pumpItem.deleteOne();
-    
-    res.status(200).json({ success: true, message: 'Pump item deleted successfully' });
-  } catch (error) {
-    next(error);
-  }
-};
+;

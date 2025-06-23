@@ -58,7 +58,7 @@ export const users = [
     user: "pump_team",
     password: "pg@pump",
     role: "user",
-    team:"pump"
+    team:"pumps"
   },
   {
     user: "box_team",
