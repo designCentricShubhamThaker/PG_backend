@@ -13,10 +13,15 @@ app.use(express.json());
 
 const httpServer = createServer(app);
 
+// app.use(cors({
+//   // origin: process.env.PROD_CLIENT_URL,
+//   origin: process.env.PROD_CLIENT_URL,
+//   credentials: true
+// }));
+
 app.use(cors({
-  // origin: process.env.PROD_CLIENT_URL,
-  origin: process.env.PROD_CLIENT_URL,
-  credentials: true
+  origin: '*',         // WARNING: This will NOT work with credentials
+  credentials: true    // So this combination is invalid
 }));
 
 const io = new Server(httpServer, {
