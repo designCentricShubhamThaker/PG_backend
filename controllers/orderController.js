@@ -5,15 +5,19 @@ import CapItem from '../models/CapItem.js';
 import BoxItem from '../models/BoxItem.js';
 import PumpItem from '../models/PumpItem.js';
 import mongoose from 'mongoose';
+import CoatingItem from '../models/CoatingItem.js';
+import PrintingItem from '../models/PrintingItem.js';
+import FrostingItem from '../models/FrostingItem.js';
+import FoilingItem from '../models/FoilingItem.js';
 
 export const getAllOrders = async (req, res, next) => {
   try {
     // Get the orderType from query parameters (pending, completed, or all)
     const { orderType } = req.query;
-    
+
     // Create a filter object that will be used in the database query
     let filter = {};
-    
+
     // Apply filtering based on orderType
     if (orderType === 'pending') {
       filter.order_status = 'Pending';
@@ -21,7 +25,7 @@ export const getAllOrders = async (req, res, next) => {
       filter.order_status = 'Completed';
     }
     // If orderType is not specified or is 'all', no filter is applied
-    
+
     const orders = await Order.find(filter)
       .sort({ createdAt: -1 })
       .populate({
@@ -31,78 +35,12 @@ export const getAllOrders = async (req, res, next) => {
         },
       });
 
-    res.status(200).json({ 
-      success: true, 
-      count: orders.length, 
-      data: orders 
+    res.status(200).json({
+      success: true,
+      count: orders.length,
+      data: orders
     });
   } catch (error) {
-    next(error);
-  }
-};
-
-
-export const getOrderById = async (req, res, next) => {
-  try {
-    const order = await Order.findById(req.params.id)
-      .populate({
-        path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-        },
-      });
-    
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-    
-    res.status(200).json({ success: true, data: order });
-  } catch (error) {
-    if (error.kind === 'ObjectId') {
-      return res.status(404).json({ success: false, message: 'Order not found with invalid ID format' });
-    }
-    next(error);
-  }
-};
-
-
-export const getOrderByNumber = async (req, res, next) => {
-  try {
-    const { orderNumber } = req.params;
-    
-    const order = await Order.findOne({ order_number: orderNumber })
-      .populate({
-        path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-        },
-      });
-    
-    if (!order) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Order not found with this number' 
-      });
-    }
-    
-    // Transform the data to match your frontend expectations
-    const transformedOrder = {
-      ...order.toObject(),
-      items: order.item_ids.map(item => ({
-        name: item.name,
-        glass: item.team_assignments.glass || [],
-        caps: item.team_assignments.caps || [],
-        boxes: item.team_assignments.boxes || [],
-        pumps: item.team_assignments.pumps || []
-      }))
-    };
-    
-    res.status(200).json({ 
-      success: true, 
-      data: transformedOrder 
-    });
-  } catch (error) {
-    console.error('Error fetching order by number:', error);
     next(error);
   }
 };
@@ -112,11 +50,11 @@ export const createOrder = async (req, res, next) => {
   session.startTransaction();
 
   try {
-    const { 
-      order_number, 
-      dispatcher_name, 
-      customer_name, 
-      items = [] 
+    const {
+      order_number,
+      dispatcher_name,
+      customer_name,
+      items = []
     } = req.body;
 
     if (!order_number || !dispatcher_name || !customer_name) {
@@ -153,10 +91,15 @@ export const createOrder = async (req, res, next) => {
           glass: [],
           caps: [],
           boxes: [],
-          pumps: []
+          pumps: [],
+          coating: [],
+          printing: [],
+          foiling: [],
+          frosting: []
+
         }
       });
-      
+
       await orderItem.save({ session });
       itemIds.push(orderItem._id);
 
@@ -180,12 +123,80 @@ export const createOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await glassItem.save({ session });
+
+          // ✅ FIXED: Check decoration string directly for process inclusion
+          const decorationKey = glassData.decoration || '';
+
+          // Create decoration items based on the decoration key
+          if (decorationKey.includes('coating')) {
+            const coatingItem = await CoatingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: order_number,
+              quantity: glassItem.quantity,
+              status: "Pending",
+              team_tracking: {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.coating.push(coatingItem[0]._id);
+          }
+
+          if (decorationKey.includes('printing')) {
+            const printingItem = await PrintingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: order_number,
+              quantity: glassItem.quantity,
+              status: "Pending",
+              team_tracking: {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.printing.push(printingItem[0]._id);
+          }
+
+          if (decorationKey.includes('foiling')) {
+            const foilingItem = await FoilingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: order_number,
+              quantity: glassItem.quantity,
+              status: "Pending",
+              team_tracking: {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.foiling.push(foilingItem[0]._id);
+          }
+
+          if (decorationKey.includes('frosting')) {
+            const frostingItem = await FrostingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: order_number,
+              quantity: glassItem.quantity,
+              status: "Pending",
+              team_tracking: {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.frosting.push(frostingItem[0]._id);
+          }
           orderItem.team_assignments.glass.push(glassItem._id);
         }
       }
-      
+
       if (item.caps && item.caps.length > 0) {
         for (const capData of item.caps) {
           const capItem = new CapItem({
@@ -204,12 +215,12 @@ export const createOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await capItem.save({ session });
           orderItem.team_assignments.caps.push(capItem._id);
         }
       }
-      
+
       if (item.boxes && item.boxes.length > 0) {
         for (const boxData of item.boxes) {
           const boxItem = new BoxItem({
@@ -226,12 +237,12 @@ export const createOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await boxItem.save({ session });
           orderItem.team_assignments.boxes.push(boxItem._id);
         }
       }
-      
+
       if (item.pumps && item.pumps.length > 0) {
         for (const pumpData of item.pumps) {
           const pumpItem = new PumpItem({
@@ -248,18 +259,18 @@ export const createOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await pumpItem.save({ session });
           orderItem.team_assignments.pumps.push(pumpItem._id);
         }
       }
-      
+
       await orderItem.save({ session });
     }
-  
+
     newOrder.item_ids = itemIds;
     await newOrder.save({ session });
-    
+
     await session.commitTransaction();
     session.endSession();
 
@@ -267,27 +278,140 @@ export const createOrder = async (req, res, next) => {
     const populatedOrder = await Order.findById(newOrder._id)
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-        },
+        populate: [
+          { path: 'team_assignments.glass' },
+          { path: 'team_assignments.caps' },
+          { path: 'team_assignments.boxes' },
+          { path: 'team_assignments.pumps' },
+          { path: 'team_assignments.coating' },
+          { path: 'team_assignments.printing' },
+          { path: 'team_assignments.foiling' },
+          { path: 'team_assignments.frosting' }
+        ]
       });
-    
-    res.status(201).json({ 
-      success: true, 
+
+    res.status(201).json({
+      success: true,
       message: 'Order created successfully',
-      data: populatedOrder 
+      data: populatedOrder
     });
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    
+
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
         message: 'Duplicate key error. Order number must be unique.'
       });
     }
-    
+
+    next(error);
+  }
+};
+
+export const createOrderItem = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { order_id } = req.params;
+    const order = await Order.findById(order_id);
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    const orderItem = new OrderItem({
+      ...req.body,
+      order_number: order.order_number,
+      team_assignments: {
+        glass: [],
+        caps: [],
+        boxes: [],
+        pumps: []
+      }
+    });
+
+    await orderItem.save({ session });
+
+    order.item_ids.push(orderItem._id);
+    await order.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const populatedItem = await OrderItem.findById(orderItem._id)
+      .populate('team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps');
+
+    res.status(201).json({ success: true, data: populatedItem });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    next(error);
+  }
+};
+
+export const getOrderById = async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate({
+        path: 'item_ids',
+        populate: {
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+        },
+      });
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    res.status(200).json({ success: true, data: order });
+  } catch (error) {
+    if (error.kind === 'ObjectId') {
+      return res.status(404).json({ success: false, message: 'Order not found with invalid ID format' });
+    }
+    next(error);
+  }
+};
+
+export const getOrderByNumber = async (req, res, next) => {
+  try {
+    const { orderNumber } = req.params;
+
+    const order = await Order.findOne({ order_number: orderNumber })
+      .populate({
+        path: 'item_ids',
+        populate: {
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+        },
+      });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found with this number'
+      });
+    }
+
+    // Transform the data to match your frontend expectations
+    const transformedOrder = {
+      ...order.toObject(),
+      items: order.item_ids.map(item => ({
+        name: item.name,
+        glass: item.team_assignments.glass || [],
+        caps: item.team_assignments.caps || [],
+        boxes: item.team_assignments.boxes || [],
+        pumps: item.team_assignments.pumps || []
+      }))
+    };
+
+    res.status(200).json({
+      success: true,
+      data: transformedOrder
+    });
+  } catch (error) {
+    console.error('Error fetching order by number:', error);
     next(error);
   }
 };
@@ -297,12 +421,12 @@ export const updateOrder = async (req, res, next) => {
   session.startTransaction();
 
   try {
-    const { 
-      order_number, 
-      dispatcher_name, 
-      customer_name, 
+    const {
+      order_number,
+      dispatcher_name,
+      customer_name,
       order_status,
-      items = [] 
+      items = []
     } = req.body;
 
     // Find the existing order with populated data
@@ -313,7 +437,7 @@ export const updateOrder = async (req, res, next) => {
           path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
         },
       });
-      
+
     if (!existingOrder) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
@@ -323,9 +447,9 @@ export const updateOrder = async (req, res, next) => {
 
     // Check if new order number conflicts with other orders
     if (order_number && order_number !== oldOrderNumber) {
-      const orderExists = await Order.findOne({ 
-        order_number, 
-        _id: { $ne: req.params.id } 
+      const orderExists = await Order.findOne({
+        order_number,
+        _id: { $ne: req.params.id }
       });
       if (orderExists) {
         return res.status(400).json({
@@ -337,7 +461,7 @@ export const updateOrder = async (req, res, next) => {
 
     // Preserve existing tracking data
     const existingTrackingData = new Map();
-    
+
     if (existingOrder.item_ids) {
       existingOrder.item_ids.forEach(item => {
         const itemKey = item.name;
@@ -347,7 +471,7 @@ export const updateOrder = async (req, res, next) => {
           boxes: {},
           pumps: {}
         });
-        
+
         ['glass', 'caps', 'boxes', 'pumps'].forEach(teamType => {
           if (item.team_assignments?.[teamType]) {
             item.team_assignments[teamType].forEach(assignment => {
@@ -385,7 +509,7 @@ export const updateOrder = async (req, res, next) => {
 
     // *** FIX: Delete OrderItems using the OLD order number ***
     const existingOrderItems = await OrderItem.find({ order_number: oldOrderNumber });
-    
+
     for (const item of existingOrderItems) {
       await GlassItem.deleteMany({ itemId: item._id }, { session });
       await CapItem.deleteMany({ itemId: item._id }, { session });
@@ -411,7 +535,7 @@ export const updateOrder = async (req, res, next) => {
           pumps: []
         }
       });
-      
+
       await orderItem.save({ session });
       itemIds.push(orderItem._id);
 
@@ -424,7 +548,7 @@ export const updateOrder = async (req, res, next) => {
         for (const glassData of item.glass) {
           const assignmentKey = getAssignmentKey(glassData, 'glass');
           const existingTracking = existingItemTracking.glass[assignmentKey];
-          
+
           const glassItem = new GlassItem({
             itemId: orderItem._id,
             orderNumber: existingOrder.order_number, // Use NEW order number
@@ -443,18 +567,18 @@ export const updateOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await glassItem.save({ session });
           orderItem.team_assignments.glass.push(glassItem._id);
         }
       }
-      
+
       // Handle Cap Items with preserved tracking
       if (item.caps && item.caps.length > 0) {
         for (const capData of item.caps) {
           const assignmentKey = getAssignmentKey(capData, 'caps');
           const existingTracking = existingItemTracking.caps[assignmentKey];
-          
+
           const capItem = new CapItem({
             itemId: orderItem._id,
             orderNumber: existingOrder.order_number, // Use NEW order number
@@ -471,18 +595,18 @@ export const updateOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await capItem.save({ session });
           orderItem.team_assignments.caps.push(capItem._id);
         }
       }
-      
+
       // Handle Box Items with preserved tracking
       if (item.boxes && item.boxes.length > 0) {
         for (const boxData of item.boxes) {
           const assignmentKey = getAssignmentKey(boxData, 'boxes');
           const existingTracking = existingItemTracking.boxes[assignmentKey];
-          
+
           const boxItem = new BoxItem({
             itemId: orderItem._id,
             orderNumber: existingOrder.order_number, // Use NEW order number
@@ -497,18 +621,18 @@ export const updateOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await boxItem.save({ session });
           orderItem.team_assignments.boxes.push(boxItem._id);
         }
       }
-      
+
       // Handle Pump Items with preserved tracking
       if (item.pumps && item.pumps.length > 0) {
         for (const pumpData of item.pumps) {
           const assignmentKey = getAssignmentKey(pumpData, 'pumps');
           const existingTracking = existingItemTracking.pumps[assignmentKey];
-          
+
           const pumpItem = new PumpItem({
             itemId: orderItem._id,
             orderNumber: existingOrder.order_number, // Use NEW order number
@@ -523,19 +647,19 @@ export const updateOrder = async (req, res, next) => {
               status: 'Pending'
             }
           });
-          
+
           await pumpItem.save({ session });
           orderItem.team_assignments.pumps.push(pumpItem._id);
         }
       }
-      
+
       await orderItem.save({ session });
     }
 
     // Update the order with new item IDs
     existingOrder.item_ids = itemIds;
     await existingOrder.save({ session });
-    
+
     await session.commitTransaction();
     session.endSession();
 
@@ -547,23 +671,23 @@ export const updateOrder = async (req, res, next) => {
           path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
         },
       });
-    
-    res.status(200).json({ 
-      success: true, 
+
+    res.status(200).json({
+      success: true,
       message: 'Order updated successfully',
-      data: populatedOrder 
+      data: populatedOrder
     });
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    
+
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
         message: 'Duplicate key error. Order number must be unique.'
       });
     }
-    
+
     next(error);
   }
 };
@@ -571,18 +695,18 @@ export const updateOrder = async (req, res, next) => {
 export const deleteOrder = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const order = await Order.findById(req.params.id);
-    
+
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
     const orderItems = await OrderItem.find({ order_number: order.order_number });
-    
+
     for (const item of orderItems) {
       await GlassItem.deleteMany({ itemId: item._id }, { session });
-      await CapItem.deleteMany({ itemId: item._id }, { session });      
+      await CapItem.deleteMany({ itemId: item._id }, { session });
       await BoxItem.deleteMany({ itemId: item._id }, { session });
       await PumpItem.deleteMany({ itemId: item._id }, { session });
       await item.deleteOne({ session });
@@ -590,50 +714,8 @@ export const deleteOrder = async (req, res, next) => {
     await order.deleteOne({ session });
     await session.commitTransaction();
     session.endSession();
-    
-    res.status(200).json({ success: true, message: 'Order deleted successfully' });
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    next(error);
-  }
-};
 
-export const createOrderItem = async (req, res, next) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const { order_id } = req.params;
-    const order = await Order.findById(order_id);
-    
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-    
-    const orderItem = new OrderItem({
-      ...req.body,
-      order_number: order.order_number,
-      team_assignments: {
-        glass: [],
-        caps: [],
-        boxes: [],
-        pumps: []
-      }
-    });
-    
-    await orderItem.save({ session });
-    
-    order.item_ids.push(orderItem._id);
-    await order.save({ session });
-    
-    await session.commitTransaction();
-    session.endSession();
-    
-    const populatedItem = await OrderItem.findById(orderItem._id)
-      .populate('team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps');
-    
-    res.status(201).json({ success: true, data: populatedItem });
+    res.status(200).json({ success: true, message: 'Order deleted successfully' });
   } catch (error) {
     await session.abortTransaction();
     session.endSession();

@@ -39,7 +39,11 @@ const teamMembers = {
   glass: new Set(),
   caps: new Set(),
   boxes: new Set(),
-  pumps: new Set()
+  pumps: new Set(),
+  deco_print: new Set(),
+  deco_foil: new Set(),
+  deco_coat: new Set(),
+  deco_frost: new Set()
 };
 
 app.use('/api', routes);
@@ -84,64 +88,65 @@ io.on('connection', (socket) => {
     broadcastConnectedUsers();
   });
 
- socket.on('new-order-created', (orderData) => {
-  console.log('📦 New order notification received:', orderData.orderNumber);
+  socket.on('new-order-created', (orderData) => {
+    console.log('📦 New order notification received:', orderData.orderNumber);
 
-  try {
-    const { order, assignedTeams, dispatcherName, customerName, orderNumber, timestamp } = orderData;
+    try {
+      const { order, assignedTeams, dispatcherName, customerName, orderNumber, timestamp } = orderData;
 
-    // DEBUG: Log the assigned teams and team members
-    console.log('🔍 Assigned Teams:', assignedTeams);
-    console.log('🔍 Available Team Members:', Object.keys(teamMembers));
-    console.log('🔍 Team Members Sizes:', {
-      dispatchers: teamMembers.dispatchers.size,
-      glass: teamMembers.glass.size,
-      caps: teamMembers.caps.size,
-      boxes: teamMembers.boxes.size,
-      pumps: teamMembers.pumps.size
-    });
+      // DEBUG: Log the assigned teams and team members
+      console.log('🔍 Assigned Teams:', assignedTeams);
+      console.log('🔍 Available Team Members:', Object.keys(teamMembers));
+      console.log('🔍 Team Members Sizes:', {
+        dispatchers: teamMembers.dispatchers.size,
+        glass: teamMembers.glass.size,
+        caps: teamMembers.caps.size,
+        boxes: teamMembers.boxes.size,
+        pumps: teamMembers.pumps.size,
+        deco_print: teamMembers.deco_print.size,
+        deco_foil: teamMembers.deco_print.foil,
+        deco_coat: teamMembers.deco_print.coat,
+        deco_frost: teamMembers.deco_print.frost,
+      });
 
-    const baseNotification = {
-      type: 'new-order',
-      orderNumber,
-      customerName,
-      dispatcherName,
-      timestamp,
-      message: `New order #${orderNumber} created for ${customerName}`
-    };
+      const baseNotification = {
+        type: 'new-order',
+        orderNumber,
+        customerName,
+        dispatcherName,
+        timestamp,
+        message: `New order #${orderNumber} created for ${customerName}`
+      };
+      io.to('dispatchers').emit('new-order', {
+        ...baseNotification,
+        orderData: order
+      });
 
-    // Send full order to dispatchers
-    io.to('dispatchers').emit('new-order', {
-      ...baseNotification,
-      orderData: order
-    });
+      assignedTeams.forEach(teamName => {
+        console.log(`🔍 Checking team: ${teamName}`);
+        console.log(`🔍 Team exists in teamMembers: ${!!teamMembers[teamName]}`);
+        console.log(`🔍 Team has members: ${teamMembers[teamName]?.size || 0}`);
 
-    // Send filtered data to each team
-    assignedTeams.forEach(teamName => {
-      console.log(`🔍 Checking team: ${teamName}`);
-      console.log(`🔍 Team exists in teamMembers: ${!!teamMembers[teamName]}`);
-      console.log(`🔍 Team has members: ${teamMembers[teamName]?.size || 0}`);
-      
-      if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
-        const filteredOrder = filterOrderForTeam(order, teamName);
-        console.log(`🔍 Filtered order for ${teamName}:`, JSON.stringify(filteredOrder, null, 2));
+        if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
+          const filteredOrder = filterOrderForTeam(order, teamName);
+          console.log(`🔍 Filtered order for ${teamName}:`, JSON.stringify(filteredOrder, null, 2));
 
-        io.to(teamName).emit('new-order', {
-          ...baseNotification,
-          message: `New order #${orderNumber} assigned to ${teamName.toUpperCase()} team`,
-          orderData: filteredOrder
-        });
+          io.to(teamName).emit('new-order', {
+            ...baseNotification,
+            message: `New order #${orderNumber} assigned to ${teamName.toUpperCase()} team`,
+            orderData: filteredOrder
+          });
 
-        console.log(`📤 Filtered order sent to ${teamName} team`);
-      } else {
-        console.log(`❌ No members found for team: ${teamName}`);
-      }
-    });
+          console.log(`📤 Filtered order sent to ${teamName} team`);
+        } else {
+          console.log(`❌ No members found for team: ${teamName}`);
+        }
+      });
 
-  } catch (error) {
-    console.error('Error handling order notification:', error);
-  }
-});
+    } catch (error) {
+      console.error('Error handling order notification:', error);
+    }
+  });
 
 
   socket.on('team-progress-updated', (progressData) => {
@@ -340,7 +345,7 @@ io.on('connection', (socket) => {
     const teamLists = {};
     const allTeamMembers = [];
 
-    ['glass', 'caps', 'boxes', 'pumps'].forEach(teamName => {
+    ['glass', 'caps', 'boxes', 'pumps', 'deco_print', 'deco_foil', 'deco_coat', 'deco_frost'].forEach(teamName => {
       const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
         const user = connectedUsers.get(socketId);
         return {
@@ -354,7 +359,6 @@ io.on('connection', (socket) => {
       allTeamMembers.push(...teamUsers);
     });
 
-    // Send to dispatchers
     io.to('dispatchers').emit('connected-users', {
       dispatchers: dispatchersList,
       teamMembers: allTeamMembers,
