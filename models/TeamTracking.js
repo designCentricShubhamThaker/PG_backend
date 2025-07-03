@@ -7,10 +7,6 @@ export const teamTrackingSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now },
     updated_by: String
   }],
-  status: {
-  type: String,
-  enum: ['Pending', 'In Progress', 'Completed'],
-  default: 'Pending'
-}
+ 
 
 }, { _id: false });

@@ -58,34 +58,15 @@ export const getGlassOrders = async (req, res, next) => {
 
 export const updateGlassTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
-  
+
   try {
-    const { orderNumber, itemId, updates, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
+    const { orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
 
-    const isBulkUpdate = Array.isArray(updates) && updates.length > 0;
-    const isSingleUpdate = assignmentId && newEntry && newTotalCompleted !== undefined && newStatus;
-
-    if (!orderNumber || !itemId || (!isBulkUpdate && !isSingleUpdate)) {
+    if (!orderNumber || !itemId || !assignmentId || !newEntry || newTotalCompleted === undefined || !newStatus) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields. Provide either: (orderNumber, itemId, updates[]) OR (orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus)'
+        message: 'Missing required fields: orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus'
       });
-    }
-
-    const updatesArray = isBulkUpdate ? updates : [{
-      assignmentId,
-      newEntry,
-      newTotalCompleted,
-      newStatus
-    }];
-
-    for (const update of updatesArray) {
-      if (!update.assignmentId || !update.newEntry || update.newTotalCompleted === undefined || !update.newStatus) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid update structure. Each update must have assignmentId, newEntry, newTotalCompleted, and newStatus'
-        });
-      }
     }
 
     await session.withTransaction(async () => {
@@ -93,45 +74,37 @@ export const updateGlassTracking = async (req, res, next) => {
         .populate('team_assignments.glass')
         .session(session);
 
-      if (!item) {
-        throw new Error('Item not found');
+      if (!item) throw new Error('Item not found');
+
+      const glassAssignment = item.team_assignments?.glass.find(g => g._id.toString() === assignmentId);
+      if (!glassAssignment) throw new Error(`Glass assignment not found: ${assignmentId}`);
+
+      const currentCompleted = glassAssignment.team_tracking?.total_completed_qty || 0;
+      const remaining = glassAssignment.quantity - currentCompleted;
+
+      if (newEntry.quantity > remaining) {
+        throw new Error(`Quantity ${newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${glassAssignment.glass_name}`);
       }
 
-      const glassAssignments = item.team_assignments?.glass || [];
-
-      for (const update of updatesArray) {
-        const assignment = glassAssignments.find(a => a._id.toString() === update.assignmentId);
-        
-        if (!assignment) {
-          throw new Error(`Glass assignment not found: ${update.assignmentId}`);
-        }
-
-        const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
-        const remaining = assignment.quantity - currentCompleted;
-        
-        if (update.newEntry.quantity > remaining) {
-          throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${assignment.glass_name}`);
-        }
-
-        await GlassItem.findByIdAndUpdate(
-          update.assignmentId,
-          {
-            $set: {
-              'team_tracking.total_completed_qty': update.newTotalCompleted,
-              'team_tracking.last_updated': new Date(),
-              status: update.newStatus
-            },
-            $push: {
-              'team_tracking.completed_entries': {
-                ...update.newEntry,
-                date: new Date(update.newEntry.date)
-              }
-            }
+      await GlassItem.findByIdAndUpdate(
+        assignmentId,
+        {
+          $set: {
+            'team_tracking.total_completed_qty': newTotalCompleted,
+            'team_tracking.last_updated': new Date(),
+            status: newStatus
           },
-          { session, new: true }
-        );
-      }
+          $push: {
+            'team_tracking.completed_entries': {
+              ...newEntry,
+              date: new Date(newEntry.date)
+            }
+          }
+        },
+        { session, new: true }
+      );
 
+      // Check if all glass assignments are completed for this item
       const itemCompletionResult = await OrderItem.aggregate([
         { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
         {
@@ -170,6 +143,7 @@ export const updateGlassTracking = async (req, res, next) => {
           { session }
         );
 
+        // Check if all items in the order are complete
         const orderCompletionResult = await Order.aggregate([
           { $match: { order_number: orderNumber } },
           {
@@ -255,31 +229,29 @@ export const updateGlassTracking = async (req, res, next) => {
       }))
     };
 
-    const updatedAssignments = updatesArray.map(update => ({
-      assignmentId: update.assignmentId,
-      newStatus: update.newStatus,
-      totalCompleted: update.newTotalCompleted
-    }));
-
     res.status(200).json({
       success: true,
       message: 'Glass tracking updated successfully',
       data: {
         order: responseData,
-        updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
+        updatedAssignment: {
+          assignmentId,
+          newStatus,
+          totalCompleted: newTotalCompleted
+        }
       }
     });
 
   } catch (error) {
     console.error('Error updating glass tracking:', error);
-    
+
     if (error.message.includes('not found') || error.message.includes('exceeds')) {
       return res.status(400).json({
         success: false,
         message: error.message
       });
     }
-    
+
     next(error);
   } finally {
     await session.endSession();

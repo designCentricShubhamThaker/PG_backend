@@ -40,10 +40,10 @@ const teamMembers = {
   caps: new Set(),
   boxes: new Set(),
   pumps: new Set(),
-  deco_print: new Set(),
-  deco_foil: new Set(),
-  deco_coat: new Set(),
-  deco_frost: new Set()
+  printing: new Set(),
+  coating: new Set(),
+  foiling: new Set(),
+  frosting: new Set()
 };
 
 app.use('/api', routes);
@@ -103,10 +103,10 @@ io.on('connection', (socket) => {
         caps: teamMembers.caps.size,
         boxes: teamMembers.boxes.size,
         pumps: teamMembers.pumps.size,
-        deco_print: teamMembers.deco_print.size,
-        deco_foil: teamMembers.deco_print.foil,
-        deco_coat: teamMembers.deco_print.coat,
-        deco_frost: teamMembers.deco_print.frost,
+        printing: teamMembers.printing.size,
+        foiling: teamMembers.foiling.size,
+        coating: teamMembers.coating.size,
+        frosting: teamMembers.frosting.size,
       });
 
       const baseNotification = {
@@ -139,7 +139,7 @@ io.on('connection', (socket) => {
 
           console.log(`📤 Filtered order sent to ${teamName} team`);
         } else {
-          console.log(`❌ No members found for team: ${teamName}`);
+          console.log(`❌ No members found for  team: ${teamName}`);
         }
       });
 
@@ -322,17 +322,70 @@ io.on('connection', (socket) => {
     Object.values(teamMembers).forEach(team => team.delete(socketId));
   }
 
+  // function filterOrderForTeam(order, teamName) {
+  //   return {
+  //     ...order,
+  //     item_ids: order.item_ids?.map(item => ({
+  //       ...item,
+  //       team_assignments: {
+  //         [teamName]: item.team_assignments?.[teamName] || []
+  //       }
+  //     })).filter(item => item.team_assignments[teamName]?.length > 0) || []
+  //   };
+  // }
+
+
   function filterOrderForTeam(order, teamName) {
+    const isDecorationTeam = ['printing', 'coating', 'foiling', 'frosting'].includes(teamName);
+
     return {
       ...order,
-      item_ids: order.item_ids?.map(item => ({
-        ...item,
-        team_assignments: {
-          [teamName]: item.team_assignments?.[teamName] || []
+      item_ids: order.item_ids?.map(item => {
+        const assignment = item.team_assignments?.[teamName] || [];
+
+        if (isDecorationTeam && assignment.length > 0) {
+          const enrichedAssignments = assignment.map(deco => {
+            const glassEntry = findGlassEntry(order.item_ids, deco.glass_item_id);
+            return {
+              ...deco,
+              glass_name: glassEntry?.glass_name,
+              quantity: glassEntry?.quantity,
+              weight: glassEntry?.weight,
+              neck_size: glassEntry?.neck_size,
+              decoration_details: glassEntry?.decoration_details,
+              team_tracking: glassEntry?.team_tracking
+            };
+          });
+
+          return {
+            ...item,
+            team_assignments: {
+              [teamName]: enrichedAssignments
+            }
+          };
         }
-      })).filter(item => item.team_assignments[teamName]?.length > 0) || []
+
+        return {
+          ...item,
+          team_assignments: {
+            [teamName]: assignment
+          }
+        };
+      }).filter(item => item.team_assignments[teamName]?.length > 0) || []
     };
   }
+
+  // Helper to find the matching glass entry by glass_item_id
+  function findGlassEntry(items, glassItemId) {
+    for (const item of items) {
+      const glassAssignments = item.team_assignments?.glass || [];
+      const match = glassAssignments.find(entry => entry._id === glassItemId);
+      if (match) return match;
+    }
+    return null;
+  }
+
+
   function broadcastConnectedUsers() {
     const dispatchersList = Array.from(teamMembers.dispatchers).map(socketId => {
       const user = connectedUsers.get(socketId);
@@ -345,7 +398,7 @@ io.on('connection', (socket) => {
     const teamLists = {};
     const allTeamMembers = [];
 
-    ['glass', 'caps', 'boxes', 'pumps', 'deco_print', 'deco_foil', 'deco_coat', 'deco_frost'].forEach(teamName => {
+    ['glass', 'caps', 'boxes', 'pumps', 'printing', 'coating', 'foiling', 'frosting'].forEach(teamName => {
       const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
         const user = connectedUsers.get(socketId);
         return {

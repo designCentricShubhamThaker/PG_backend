@@ -3,7 +3,6 @@ import OrderItem from '../models/OrderItem.js';
 import PrintingItem from '../models/PrintingItem.js';
 import mongoose from 'mongoose';
 
-
 export const getPrintingOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
@@ -22,7 +21,7 @@ export const getPrintingOrders = async (req, res, next) => {
           path: 'team_assignments.printing',
           model: 'PrintingItem',
           populate: {
-            path: 'glass_item_id', // ✅ This is what brings in glass_name
+            path: 'glass_item_id',
             model: 'GlassItem'
           }
         }
@@ -37,7 +36,36 @@ export const getPrintingOrders = async (req, res, next) => {
         const filteredItems = order.item_ids
           .filter(item => item.team_assignments?.printing?.length > 0)
           .map(item => {
-            const printingItems = item.team_assignments.printing;
+            const printingItems = item.team_assignments.printing.map(printingItem => {
+              // Get glass item details from the populated glass_item_id
+              const glassItem = printingItem.glass_item_id;
+              
+              // Structure printing item to match glass item format
+              return {
+                _id: printingItem._id,
+                itemId: printingItem.itemId,
+                orderNumber: printingItem.orderNumber,
+                glass_item_id: glassItem._id, // Reference to the glass item
+                glass_name: glassItem.glass_name,
+                quantity: glassItem.quantity,
+                weight: glassItem.weight,
+                neck_size: glassItem.neck_size,
+                decoration: glassItem.decoration,
+                decoration_no: glassItem.decoration_no,
+                decoration_details: glassItem.decoration_details,
+                team: "Printing Team", // Printing team identifier
+                status: printingItem.status || 'Pending',
+                team_tracking: printingItem.team_tracking || {
+                  total_completed_qty: 0,
+                  completed_entries: [],
+                  last_updated: null // Add missing last_updated field
+                },
+                createdAt: printingItem.createdAt,
+                updatedAt: printingItem.updatedAt,
+                __v: printingItem.__v
+              };
+            });
+
             return {
               ...item,
               team_assignments: { printing: printingItems }
@@ -56,10 +84,10 @@ export const getPrintingOrders = async (req, res, next) => {
       data: filteredOrders
     });
   } catch (error) {
+    console.error('Error fetching printing orders:', error);
     next(error);
   }
 };
-
 
 export const updatePrintingTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -115,7 +143,7 @@ export const updatePrintingTracking = async (req, res, next) => {
         const remaining = assignment.quantity - currentCompleted;
         
         if (update.newEntry.quantity > remaining) {
-          throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${assignment.printing_name}`);
+          throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${assignment.glass_name}`);
         }
 
         await PrintingItem.findByIdAndUpdate(
@@ -137,6 +165,7 @@ export const updatePrintingTracking = async (req, res, next) => {
         );
       }
 
+      // Check if all printing assignments for this item are completed
       const itemCompletionResult = await OrderItem.aggregate([
         { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
         {
@@ -175,6 +204,7 @@ export const updatePrintingTracking = async (req, res, next) => {
           { session }
         );
 
+        // Check if all items in the order are completed
         const orderCompletionResult = await Order.aggregate([
           { $match: { order_number: orderNumber } },
           {
@@ -241,6 +271,7 @@ export const updatePrintingTracking = async (req, res, next) => {
       }
     });
 
+    // Return updated order with consistent structure
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',

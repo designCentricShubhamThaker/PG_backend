@@ -30,29 +30,29 @@ export const users = [
     user: 'deco_print',
     password: "pg@print",
     role: 'user',
-    team: "decoration",
-    subteam: "deco_print"
+    team: "printing",
+   
   },
   {
     user: 'deco_frost',
     password: "pg@frost",
     role: 'user',
-    team: "decoration",
-    subteam: "frost"
+    team: "frosting",
+  
   },
   {
     user: 'deco_coat',
     password: "pg@coat",
     role: 'user',
-    team: "decoration",
-    subteam: "deco_coat"
+    team: "coating",
+    
   },
   {
     user: 'deco_foil',
     password: "pg@foil",
     role: 'user',
-    team: "decoration",
-    subteam: "foil"
+    team: "foiling",
+
   },
   {
     user: "pump_team",
