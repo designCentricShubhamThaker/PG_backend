@@ -704,13 +704,17 @@ export const deleteOrder = async (req, res, next) => {
     }
     const orderItems = await OrderItem.find({ order_number: order.order_number });
 
-    for (const item of orderItems) {
-      await GlassItem.deleteMany({ itemId: item._id }, { session });
-      await CapItem.deleteMany({ itemId: item._id }, { session });
-      await BoxItem.deleteMany({ itemId: item._id }, { session });
-      await PumpItem.deleteMany({ itemId: item._id }, { session });
-      await item.deleteOne({ session });
-    }
+   for (const item of orderItems) {
+  await GlassItem.deleteMany({ itemId: item._id }, { session });
+  await CapItem.deleteMany({ itemId: item._id }, { session });
+  await BoxItem.deleteMany({ itemId: item._id }, { session });
+  await PumpItem.deleteMany({ itemId: item._id }, { session });
+  await PrintingItem.deleteMany({ itemId: item._id }, { session });
+  await CoatingItem.deleteMany({ itemId: item._id }, { session });
+  await FoilingItem.deleteMany({ itemId: item._id }, { session });
+  await FrostingItem.deleteMany({ itemId: item._id }, { session }); // ✅ FIXED
+}
+
     await order.deleteOne({ session });
     await session.commitTransaction();
     session.endSession();

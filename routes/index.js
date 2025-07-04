@@ -13,6 +13,9 @@ import boxDataRoutes from './boxDataRoutes.js';
 import customerRoutes from './customerRoutes.js'; 
 import TeamOrderRoutes from './TeamOrderRoutes.js'; 
 import printingRoutes from './printingRoutes.js'; 
+import foilingRoutes from './foilingRoutes.js'; 
+import coatingRoutes from './printingRoutes.js'; 
+import frostingRoutes from './frostingRoutes.js'; 
 
 const router = express.Router();
 
@@ -30,6 +33,9 @@ router.use('/capdata', capDataRoutes)
 router.use('/boxdata', boxDataRoutes)
 router.use('/customer', customerRoutes)
 router.use('/print', printingRoutes)
+router.use('/coat', coatingRoutes)
+router.use('/frost', frostingRoutes)
+router.use('/foil', foilingRoutes)
 
 
 export default router;

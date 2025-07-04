@@ -1,9 +1,9 @@
 import Order from '../models/Order.js';
 import OrderItem from '../models/OrderItem.js';
-import PrintingItem from '../models/PrintingItem.js';
+import FoilingItem from '../models/FoilingItem.js';
 import mongoose from 'mongoose';
 
-export const getPrintingOrders = async (req, res, next) => {
+export const getFoilOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
     let filter = {};
@@ -18,8 +18,8 @@ export const getPrintingOrders = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.printing',
-          model: 'PrintingItem',
+          path: 'team_assignments.foilinging',
+          model: 'FoilingItem',
           populate: {
             path: 'glass_item_id',
             model: 'GlassItem'
@@ -30,22 +30,20 @@ export const getPrintingOrders = async (req, res, next) => {
 
     const filteredOrders = orders
       .filter(order =>
-        order.item_ids.some(item => item.team_assignments?.printing?.length > 0)
+        order.item_ids.some(item => item.team_assignments?.foiling?.length > 0)
       )
       .map(order => {
         const filteredItems = order.item_ids
-          .filter(item => item.team_assignments?.printing?.length > 0)
+          .filter(item => item.team_assignments?.foiling?.length > 0)
           .map(item => {
-            const printingItems = item.team_assignments.printing.map(printingItem => {
-              // Get glass item details from the populated glass_item_id
-              const glassItem = printingItem.glass_item_id;
+            const FoilingItems = item.team_assignments.foilinging.map(FoilingItem => {
+              const glassItem = FoilingItem.glass_item_id;
               
-              // Structure printing item to match glass item format
               return {
-                _id: printingItem._id,
-                itemId: printingItem.itemId,
-                orderNumber: printingItem.orderNumber,
-                glass_item_id: glassItem._id, // Reference to the glass item
+                _id: FoilingItem._id,
+                itemId: FoilingItem.itemId,
+                orderNumber: FoilingItem.orderNumber,
+                glass_item_id: glassItem._id,
                 glass_name: glassItem.glass_name,
                 quantity: glassItem.quantity,
                 weight: glassItem.weight,
@@ -53,22 +51,22 @@ export const getPrintingOrders = async (req, res, next) => {
                 decoration: glassItem.decoration,
                 decoration_no: glassItem.decoration_no,
                 decoration_details: glassItem.decoration_details,
-                team: "Printing Team", // Printing team identifier
-                status: printingItem.status || 'Pending',
-                team_tracking: printingItem.team_tracking || {
+                team: "Foil Team",
+                status: FoilingItem.status || 'Pending',
+                team_tracking: FoilingItem.team_tracking || {
                   total_completed_qty: 0,
                   completed_entries: [],
-                  last_updated: null // Add missing last_updated field
+                  last_updated: null
                 },
-                createdAt: printingItem.createdAt,
-                updatedAt: printingItem.updatedAt,
-                __v: printingItem.__v
+                createdAt: FoilingItem.createdAt,
+                updatedAt: FoilingItem.updatedAt,
+                __v: FoilingItem.__v
               };
             });
 
             return {
               ...item,
-              team_assignments: { printing: printingItems }
+              team_assignments: { foil: FoilingItems }
             };
           });
 
@@ -84,12 +82,12 @@ export const getPrintingOrders = async (req, res, next) => {
       data: filteredOrders
     });
   } catch (error) {
-    console.error('Error fetching printing orders:', error);
+    console.error('Error fetching foil orders:', error);
     next(error);
   }
 };
 
-export const updatePrintingTracking = async (req, res, next) => {
+export const updateFoilTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
   
   try {
@@ -123,20 +121,20 @@ export const updatePrintingTracking = async (req, res, next) => {
 
     await session.withTransaction(async () => {
       const item = await OrderItem.findById(itemId)
-        .populate('team_assignments.printing')
+        .populate('team_assignments.foilinging')
         .session(session);
 
       if (!item) {
         throw new Error('Item not found');
       }
 
-      const printingAssignments = item.team_assignments?.printing || [];
+      const foilAssignments = item.team_assignments?.foiling || [];
 
       for (const update of updatesArray) {
-        const assignment = printingAssignments.find(a => a._id.toString() === update.assignmentId);
+        const assignment = foilAssignments.find(a => a._id.toString() === update.assignmentId);
         
         if (!assignment) {
-          throw new Error(`Printing assignment not found: ${update.assignmentId}`);
+          throw new Error(`Foil assignment not found: ${update.assignmentId}`);
         }
 
         const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
@@ -146,7 +144,7 @@ export const updatePrintingTracking = async (req, res, next) => {
           throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${assignment.glass_name}`);
         }
 
-        await PrintingItem.findByIdAndUpdate(
+        await FoilingItem.findByIdAndUpdate(
           update.assignmentId,
           {
             $set: {
@@ -165,23 +163,23 @@ export const updatePrintingTracking = async (req, res, next) => {
         );
       }
 
-      // Check if all printing assignments for this item are completed
+      // Check if all foil assignments for this item are completed
       const itemCompletionResult = await OrderItem.aggregate([
         { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
         {
           $lookup: {
-            from: 'printingitems',
-            localField: 'team_assignments.printing',
+            from: 'FoilingItems',
+            localField: 'team_assignments.foilinging',
             foreignField: '_id',
-            as: 'printing_assignments'
+            as: 'foil_assignments'
           }
         },
         {
           $addFields: {
-            allPrintingCompleted: {
+            allFoilCompleted: {
               $allElementsTrue: {
                 $map: {
-                  input: '$printing_assignments',
+                  input: '$foil_assignments',
                   as: 'assignment',
                   in: {
                     $gte: [
@@ -194,14 +192,13 @@ export const updatePrintingTracking = async (req, res, next) => {
             }
           }
         },
-        { $project: { allPrintingCompleted: 1 } }
+        { $project: { allFoilCompleted: 1 } }
       ]).session(session);
 
-      // Only mark the item's printing team status as completed
-      if (itemCompletionResult[0]?.allPrintingCompleted) {
+      if (itemCompletionResult[0]?.allFoilCompleted) {
         await OrderItem.findByIdAndUpdate(
           itemId,
-          { $set: { 'team_status.printing': 'Completed' } },
+          { $set: { 'team_status.foiling': 'Completed' } },
           { session }
         );
       }
@@ -210,10 +207,10 @@ export const updatePrintingTracking = async (req, res, next) => {
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.printing': { $exists: true, $ne: [] } },
+        match: { 'team_assignments.foilinging': { $exists: true, $ne: [] } },
         populate: {
-          path: 'team_assignments.printing',
-          model: 'PrintingItem'
+          path: 'team_assignments.foilinging',
+          model: 'FoilingItem'
         }
       })
       .lean();
@@ -222,7 +219,7 @@ export const updatePrintingTracking = async (req, res, next) => {
       ...updatedOrder,
       item_ids: updatedOrder.item_ids.map(item => ({
         ...item,
-        team_assignments: { printing: item.team_assignments.printing }
+        team_assignments: { foil: item.team_assignments.foilinging }
       }))
     };
 
@@ -234,7 +231,7 @@ export const updatePrintingTracking = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: 'Printing tracking updated successfully',
+      message: 'Foil tracking updated successfully',
       data: {
         order: responseData,
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
@@ -242,7 +239,7 @@ export const updatePrintingTracking = async (req, res, next) => {
     });
 
   } catch (error) {
-    console.error('Error updating printing tracking:', error);
+    console.error('Error updating foil tracking:', error);
     
     if (error.message.includes('not found') || error.message.includes('exceeds')) {
       return res.status(400).json({

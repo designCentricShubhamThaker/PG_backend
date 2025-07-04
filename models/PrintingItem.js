@@ -7,7 +7,11 @@ const PrintingItemSchema = new mongoose.Schema({
   orderNumber: { type: String, required: true },
   orderNumber: { type: String, required: true },
   quantity: { type: Number, required: true }, 
-  
+  status: {
+    type: String,
+    enum: ['Pending', 'In Progress', 'Completed'],
+    default: 'Pending'
+  },
   team_tracking: teamTrackingSchema
 }, { timestamps: true });
 

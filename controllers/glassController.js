@@ -4,11 +4,12 @@ import GlassItem from '../models/GlassItem.js';
 import mongoose from 'mongoose';
 
 
+
 export const getGlassOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
     let filter = {};
-    
+
     if (orderType === 'pending') {
       filter.order_status = 'Pending';
     } else if (orderType === 'completed') {
@@ -60,14 +61,29 @@ export const updateGlassTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
 
   try {
-    const { orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
+    const {
+      orderNumber,
+      itemId,
+      updates,
+      assignmentId,
+      newEntry,
+      newTotalCompleted,
+      newStatus
+    } = req.body;
 
-    if (!orderNumber || !itemId || !assignmentId || !newEntry || newTotalCompleted === undefined || !newStatus) {
+    const isBulkUpdate = Array.isArray(updates) && updates.length > 0;
+    const isSingleUpdate = assignmentId && newEntry && newTotalCompleted !== undefined && newStatus;
+
+    if (!orderNumber || !itemId || (!isBulkUpdate && !isSingleUpdate)) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus'
+        message: 'Missing required fields.'
       });
     }
+
+    const updatesArray = isBulkUpdate
+      ? updates
+      : [{ assignmentId, newEntry, newTotalCompleted, newStatus }];
 
     await session.withTransaction(async () => {
       const item = await OrderItem.findById(itemId)
@@ -76,35 +92,43 @@ export const updateGlassTracking = async (req, res, next) => {
 
       if (!item) throw new Error('Item not found');
 
-      const glassAssignment = item.team_assignments?.glass.find(g => g._id.toString() === assignmentId);
-      if (!glassAssignment) throw new Error(`Glass assignment not found: ${assignmentId}`);
+      const glassAssignments = item.team_assignments?.glass || [];
 
-      const currentCompleted = glassAssignment.team_tracking?.total_completed_qty || 0;
-      const remaining = glassAssignment.quantity - currentCompleted;
+      for (const update of updatesArray) {
+        const assignment = glassAssignments.find(
+          a => a._id.toString() === update.assignmentId
+        );
+        if (!assignment) throw new Error(`Glass assignment not found: ${update.assignmentId}`);
 
-      if (newEntry.quantity > remaining) {
-        throw new Error(`Quantity ${newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${glassAssignment.glass_name}`);
+        const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
+        const remaining = assignment.quantity - currentCompleted;
+
+        if (update.newEntry.quantity > remaining) {
+          throw new Error(
+            `Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for glass ${assignment.glass_name}`
+          );
+        }
+
+        await GlassItem.findByIdAndUpdate(
+          update.assignmentId,
+          {
+            $set: {
+              'team_tracking.total_completed_qty': update.newTotalCompleted,
+              'team_tracking.last_updated': new Date(),
+              status: update.newStatus
+            },
+            $push: {
+              'team_tracking.completed_entries': {
+                ...update.newEntry,
+                date: new Date(update.newEntry.date)
+              }
+            }
+          },
+          { session, new: true }
+        );
       }
 
-      await GlassItem.findByIdAndUpdate(
-        assignmentId,
-        {
-          $set: {
-            'team_tracking.total_completed_qty': newTotalCompleted,
-            'team_tracking.last_updated': new Date(),
-            status: newStatus
-          },
-          $push: {
-            'team_tracking.completed_entries': {
-              ...newEntry,
-              date: new Date(newEntry.date)
-            }
-          }
-        },
-        { session, new: true }
-      );
-
-      // Check if all glass assignments are completed for this item
+      // Check item completion
       const itemCompletionResult = await OrderItem.aggregate([
         { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
         {
@@ -143,7 +167,7 @@ export const updateGlassTracking = async (req, res, next) => {
           { session }
         );
 
-        // Check if all items in the order are complete
+        // Check if entire order is completed
         const orderCompletionResult = await Order.aggregate([
           { $match: { order_number: orderNumber } },
           {
@@ -210,6 +234,7 @@ export const updateGlassTracking = async (req, res, next) => {
       }
     });
 
+    // 🔁 Now fetch updated order after transaction ends
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
@@ -229,31 +254,44 @@ export const updateGlassTracking = async (req, res, next) => {
       }))
     };
 
+    // 🔥 Now emit team-progress-updated
+    const io = req.app.get('io');
+
+    io.emit('team-progress-updated', {
+      orderNumber,
+      team: 'glass',
+      itemName:
+        updatedOrder?.item_ids.find(i => i._id.toString() === itemId)?.name || 'Unknown Item',
+      completedItemId: itemId,
+      isFullyCompleted: true,
+      updatedOrder: responseData,
+      customerName: updatedOrder?.customer_name,
+      dispatcherName: updatedOrder?.dispatcher_name,
+      timestamp: new Date()
+    });
+
+    const updatedAssignments = updatesArray.map(update => ({
+      assignmentId: update.assignmentId,
+      newStatus: update.newStatus,
+      totalCompleted: update.newTotalCompleted
+    }));
+
     res.status(200).json({
       success: true,
       message: 'Glass tracking updated successfully',
       data: {
         order: responseData,
-        updatedAssignment: {
-          assignmentId,
-          newStatus,
-          totalCompleted: newTotalCompleted
-        }
+        updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
-
   } catch (error) {
     console.error('Error updating glass tracking:', error);
-
     if (error.message.includes('not found') || error.message.includes('exceeds')) {
-      return res.status(400).json({
-        success: false,
-        message: error.message
-      });
+      return res.status(400).json({ success: false, message: error.message });
     }
-
     next(error);
   } finally {
     await session.endSession();
   }
 };
+
