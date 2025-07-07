@@ -7,7 +7,7 @@ export const getFoilOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
     let filter = {};
-    
+
     if (orderType === 'pending') {
       filter.order_status = 'Pending';
     } else if (orderType === 'completed') {
@@ -18,7 +18,7 @@ export const getFoilOrders = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.foilinging',
+          path: 'team_assignments.foiling',
           model: 'FoilingItem',
           populate: {
             path: 'glass_item_id',
@@ -36,13 +36,12 @@ export const getFoilOrders = async (req, res, next) => {
         const filteredItems = order.item_ids
           .filter(item => item.team_assignments?.foiling?.length > 0)
           .map(item => {
-            const FoilingItems = item.team_assignments.foilinging.map(FoilingItem => {
-              const glassItem = FoilingItem.glass_item_id;
-              
+            const foilingItems = item.team_assignments.foiling.map(foilingItem => {
+              const glassItem = foilingItem.glass_item_id;
               return {
-                _id: FoilingItem._id,
-                itemId: FoilingItem.itemId,
-                orderNumber: FoilingItem.orderNumber,
+                _id: foilingItem._id,
+                itemId: foilingItem.itemId,
+                orderNumber: foilingItem.orderNumber,
                 glass_item_id: glassItem._id,
                 glass_name: glassItem.glass_name,
                 quantity: glassItem.quantity,
@@ -51,22 +50,22 @@ export const getFoilOrders = async (req, res, next) => {
                 decoration: glassItem.decoration,
                 decoration_no: glassItem.decoration_no,
                 decoration_details: glassItem.decoration_details,
-                team: "Foil Team",
-                status: FoilingItem.status || 'Pending',
-                team_tracking: FoilingItem.team_tracking || {
+                team: "Foiling Team",
+                status: foilingItem.status || 'Pending',
+                team_tracking: foilingItem.team_tracking || {
                   total_completed_qty: 0,
                   completed_entries: [],
                   last_updated: null
                 },
-                createdAt: FoilingItem.createdAt,
-                updatedAt: FoilingItem.updatedAt,
-                __v: FoilingItem.__v
+                createdAt: foilingItem.createdAt,
+                updatedAt: foilingItem.updatedAt,
+                __v: foilingItem.__v
               };
             });
 
             return {
               ...item,
-              team_assignments: { foil: FoilingItems }
+              team_assignments: { foiling: foilingItems }
             };
           });
 
@@ -82,16 +81,24 @@ export const getFoilOrders = async (req, res, next) => {
       data: filteredOrders
     });
   } catch (error) {
-    console.error('Error fetching foil orders:', error);
+    console.error('Error fetching foiling orders:', error);
     next(error);
   }
 };
 
 export const updateFoilTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
-  
+
   try {
-    const { orderNumber, itemId, updates, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
+    const {
+      orderNumber,
+      itemId,
+      updates,
+      assignmentId,
+      newEntry,
+      newTotalCompleted,
+      newStatus
+    } = req.body;
 
     const isBulkUpdate = Array.isArray(updates) && updates.length > 0;
     const isSingleUpdate = assignmentId && newEntry && newTotalCompleted !== undefined && newStatus;
@@ -99,53 +106,53 @@ export const updateFoilTracking = async (req, res, next) => {
     if (!orderNumber || !itemId || (!isBulkUpdate && !isSingleUpdate)) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields. Provide either: (orderNumber, itemId, updates[]) OR (orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus)'
+        message: 'Missing required fields.'
       });
     }
 
-    const updatesArray = isBulkUpdate ? updates : [{
-      assignmentId,
-      newEntry,
-      newTotalCompleted,
-      newStatus
-    }];
-
-    for (const update of updatesArray) {
-      if (!update.assignmentId || !update.newEntry || update.newTotalCompleted === undefined || !update.newStatus) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid update structure. Each update must have assignmentId, newEntry, newTotalCompleted, and newStatus'
-        });
-      }
-    }
+    const updatesArray = isBulkUpdate
+      ? updates
+      : [{ assignmentId, newEntry, newTotalCompleted, newStatus }];
 
     await session.withTransaction(async () => {
       const item = await OrderItem.findById(itemId)
-        .populate('team_assignments.foilinging')
+        .populate('team_assignments.foiling')
         .session(session);
 
-      if (!item) {
-        throw new Error('Item not found');
-      }
+      if (!item) throw new Error('Item not found');
 
-      const foilAssignments = item.team_assignments?.foiling || [];
+      const foilingAssignments = item.team_assignments?.foiling || [];
 
       for (const update of updatesArray) {
-        const assignment = foilAssignments.find(a => a._id.toString() === update.assignmentId);
-        
+        let actualAssignmentId = update.assignmentId;
+        if (actualAssignmentId.includes('_foiling')) {
+          actualAssignmentId = actualAssignmentId.replace('_foiling', '');
+        }
+
+        let assignment = foilingAssignments.find(
+          a => a._id.toString() === actualAssignmentId
+        ) || foilingAssignments.find(
+          a => a._id.toString() === update.assignmentId
+        ) || foilingAssignments.find(
+          a => a.glass_item_id?.toString() === actualAssignmentId
+        );
+
         if (!assignment) {
-          throw new Error(`Foil assignment not found: ${update.assignmentId}`);
+          console.log('Available assignment IDs:', foilingAssignments.map(a => a._id.toString()));
+          throw new Error(`Foiling assignment not found: ${actualAssignmentId}`);
         }
 
         const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
         const remaining = assignment.quantity - currentCompleted;
-        
+
         if (update.newEntry.quantity > remaining) {
-          throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${assignment.glass_name}`);
+          throw new Error(
+            `Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for foiling ${assignment.glass_name || 'item'}`
+          );
         }
 
         await FoilingItem.findByIdAndUpdate(
-          update.assignmentId,
+          assignment._id,
           {
             $set: {
               'team_tracking.total_completed_qty': update.newTotalCompleted,
@@ -163,23 +170,23 @@ export const updateFoilTracking = async (req, res, next) => {
         );
       }
 
-      // Check if all foil assignments for this item are completed
+      // Check item completion
       const itemCompletionResult = await OrderItem.aggregate([
         { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
         {
           $lookup: {
-            from: 'FoilingItems',
-            localField: 'team_assignments.foilinging',
+            from: 'foilingitems',
+            localField: 'team_assignments.foiling',
             foreignField: '_id',
-            as: 'foil_assignments'
+            as: 'foiling_assignments'
           }
         },
         {
           $addFields: {
-            allFoilCompleted: {
+            allFoilingCompleted: {
               $allElementsTrue: {
                 $map: {
-                  input: '$foil_assignments',
+                  input: '$foiling_assignments',
                   as: 'assignment',
                   in: {
                     $gte: [
@@ -192,25 +199,93 @@ export const updateFoilTracking = async (req, res, next) => {
             }
           }
         },
-        { $project: { allFoilCompleted: 1 } }
+        { $project: { allFoilingCompleted: 1 } }
       ]).session(session);
 
-      if (itemCompletionResult[0]?.allFoilCompleted) {
+      if (itemCompletionResult[0]?.allFoilingCompleted) {
         await OrderItem.findByIdAndUpdate(
           itemId,
           { $set: { 'team_status.foiling': 'Completed' } },
           { session }
         );
+
+        const orderCompletionResult = await Order.aggregate([
+          { $match: { order_number: orderNumber } },
+          {
+            $lookup: {
+              from: 'orderitems',
+              localField: 'item_ids',
+              foreignField: '_id',
+              as: 'items',
+              pipeline: [
+                {
+                  $lookup: {
+                    from: 'foilingitems',
+                    localField: 'team_assignments.foiling',
+                    foreignField: '_id',
+                    as: 'foiling_assignments'
+                  }
+                }
+              ]
+            }
+          },
+          {
+            $addFields: {
+              allItemsCompleted: {
+                $allElementsTrue: {
+                  $map: {
+                    input: '$items',
+                    as: 'item',
+                    in: {
+                      $cond: {
+                        if: { $gt: [{ $size: '$$item.foiling_assignments' }, 0] },
+                        then: {
+                          $allElementsTrue: {
+                            $map: {
+                              input: '$$item.foiling_assignments',
+                              as: 'assignment',
+                              in: {
+                                $gte: [
+                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
+                                  '$$assignment.quantity'
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        else: true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          { $project: { allItemsCompleted: 1, order_status: 1 } }
+        ]).session(session);
+
+        const orderResult = orderCompletionResult[0];
+        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
+          await Order.findOneAndUpdate(
+            { order_number: orderNumber },
+            { $set: { order_status: 'Completed' } },
+            { session }
+          );
+        }
       }
     });
 
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.foilinging': { $exists: true, $ne: [] } },
+        match: { 'team_assignments.foiling': { $exists: true, $ne: [] } },
         populate: {
-          path: 'team_assignments.foilinging',
-          model: 'FoilingItem'
+          path: 'team_assignments.foiling',
+          model: 'FoilingItem',
+          populate: {
+            path: 'glass_item_id',
+            model: 'GlassItem'
+          }
         }
       })
       .lean();
@@ -219,7 +294,34 @@ export const updateFoilTracking = async (req, res, next) => {
       ...updatedOrder,
       item_ids: updatedOrder.item_ids.map(item => ({
         ...item,
-        team_assignments: { foil: item.team_assignments.foilinging }
+        team_assignments: {
+          foiling: item.team_assignments.foiling.map(foilingItem => {
+            const glassItem = foilingItem.glass_item_id;
+            return {
+              _id: foilingItem._id,
+              itemId: foilingItem.itemId,
+              orderNumber: foilingItem.orderNumber,
+              glass_item_id: glassItem._id,
+              glass_name: glassItem.glass_name,
+              quantity: glassItem.quantity,
+              weight: glassItem.weight,
+              neck_size: glassItem.neck_size,
+              decoration: glassItem.decoration,
+              decoration_no: glassItem.decoration_no,
+              decoration_details: glassItem.decoration_details,
+              team: "Foiling Team",
+              status: foilingItem.status || 'Pending',
+              team_tracking: foilingItem.team_tracking || {
+                total_completed_qty: 0,
+                completed_entries: [],
+                last_updated: null
+              },
+              createdAt: foilingItem.createdAt,
+              updatedAt: foilingItem.updatedAt,
+              __v: foilingItem.__v
+            };
+          })
+        }
       }))
     };
 
@@ -231,23 +333,17 @@ export const updateFoilTracking = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: 'Foil tracking updated successfully',
+      message: 'Foiling tracking updated successfully',
       data: {
         order: responseData,
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
-
   } catch (error) {
-    console.error('Error updating foil tracking:', error);
-    
+    console.error('Error updating foiling tracking:', error);
     if (error.message.includes('not found') || error.message.includes('exceeds')) {
-      return res.status(400).json({
-        success: false,
-        message: error.message
-      });
+      return res.status(400).json({ success: false, message: error.message });
     }
-    
     next(error);
   } finally {
     await session.endSession();

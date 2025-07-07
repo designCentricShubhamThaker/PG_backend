@@ -254,22 +254,6 @@ export const updateGlassTracking = async (req, res, next) => {
       }))
     };
 
-    // 🔥 Now emit team-progress-updated
-    const io = req.app.get('io');
-
-    io.emit('team-progress-updated', {
-      orderNumber,
-      team: 'glass',
-      itemName:
-        updatedOrder?.item_ids.find(i => i._id.toString() === itemId)?.name || 'Unknown Item',
-      completedItemId: itemId,
-      isFullyCompleted: true,
-      updatedOrder: responseData,
-      customerName: updatedOrder?.customer_name,
-      dispatcherName: updatedOrder?.dispatcher_name,
-      timestamp: new Date()
-    });
-
     const updatedAssignments = updatesArray.map(update => ({
       assignmentId: update.assignmentId,
       newStatus: update.newStatus,
