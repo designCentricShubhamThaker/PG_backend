@@ -118,59 +118,84 @@ export const updatePrintingTracking = async (req, res, next) => {
       : [{ assignmentId, newEntry, newTotalCompleted, newStatus }];
 
     await session.withTransaction(async () => {
-      const item = await OrderItem.findById(itemId)
-        .populate('team_assignments.printing')
-        .session(session);
+      const item = await OrderItem.findById(itemId).session(session);
 
       if (!item) throw new Error('Item not found');
 
-      const printingAssignments = item.team_assignments?.printing || [];
-      console.log('Updates array:', updatesArray.map(u => ({ 
-        assignmentId: u.assignmentId, 
-        cleanedId: u.assignmentId.replace('_printing', '') 
-      })));
+      console.log('Processing updates for item:', itemId);
+      console.log('Item team assignments:', item.team_assignments);
 
       for (const update of updatesArray) {
-        // ✅ FIXED: Handle both formats - direct ID and ID with team suffix
-        let actualAssignmentId = update.assignmentId;
+        console.log('Processing update for assignmentId:', update.assignmentId);
         
-        // Remove team suffix if present (for backward compatibility)
-        if (actualAssignmentId.includes('_printing')) {
-          actualAssignmentId = actualAssignmentId.replace('_printing', '');
+        // ✅ FIXED: Better assignment lookup with multiple strategies
+        let assignment = null;
+        
+        try {
+          // Strategy 1: Direct lookup in PrintingItem collection
+          assignment = await PrintingItem.findById(update.assignmentId).session(session);
+          console.log('Direct lookup result:', assignment ? 'Found' : 'Not found');
+          
+          // Strategy 2: If not found, check if it's in the item's team_assignments
+          if (!assignment) {
+            const printingAssignmentIds = item.team_assignments?.printing || [];
+            console.log('Checking assignment IDs:', printingAssignmentIds);
+            
+            // Check if the assignment ID exists in the item's assignments
+            const assignmentExists = printingAssignmentIds.some(
+              id => id.toString() === update.assignmentId.toString()
+            );
+            
+            if (assignmentExists) {
+              // Try to find it again, maybe it was just created
+              assignment = await PrintingItem.findById(update.assignmentId).session(session);
+            }
+          }
+          
+          // Strategy 3: If still not found, try to find by glass_item_id and itemId
+          if (!assignment) {
+            console.log('Attempting to find assignment by glass_item_id and itemId');
+            
+            // Get all printing assignments for this item
+            const allPrintingAssignments = await PrintingItem.find({
+              itemId: itemId,
+              orderNumber: orderNumber
+            }).session(session);
+            
+            console.log('Found printing assignments for item:', allPrintingAssignments.length);
+            
+            // Try to match by the assignment ID
+            assignment = allPrintingAssignments.find(
+              a => a._id.toString() === update.assignmentId.toString()
+            );
+          }
+          
+        } catch (lookupError) {
+          console.error('Error during assignment lookup:', lookupError);
         }
-
-        console.log('Original assignment ID:', update.assignmentId);
-        console.log('Cleaned assignment ID:', actualAssignmentId);
-
-        // Try to find the assignment using the cleaned ID
-        let assignment = printingAssignments.find(
-          a => a._id.toString() === actualAssignmentId
-        );
-
-        // ✅ ADDITIONAL FIX: If not found with cleaned ID, try with original ID
+        
+        // ✅ FIXED: If still not found, provide detailed error information
         if (!assignment) {
-          assignment = printingAssignments.find(
-            a => a._id.toString() === update.assignmentId
-          );
+          console.error('❌ Assignment not found with ID:', update.assignmentId);
+          console.error('Available assignment IDs in item:', item.team_assignments?.printing || []);
+          
+          // Try to get all printing assignments for this order to debug
+          const allOrderPrintingAssignments = await PrintingItem.find({
+            orderNumber: orderNumber
+          }).session(session);
+          
+          console.error('All printing assignments for order:', allOrderPrintingAssignments.map(a => ({
+            id: a._id.toString(),
+            itemId: a.itemId,
+            glass_name: a.glass_name
+          })));
+          
+          throw new Error(`Printing assignment not found: ${update.assignmentId}. Available assignments: ${allOrderPrintingAssignments.map(a => a._id.toString()).join(', ')}`);
         }
 
-        // ✅ ADDITIONAL FIX: If still not found, try matching by glass_item_id
-        if (!assignment) {
-          assignment = printingAssignments.find(
-            a => a.glass_item_id && a.glass_item_id.toString() === actualAssignmentId
-          );
-        }
+        console.log('✅ Found assignment:', assignment._id.toString());
 
-        if (!assignment) {
-          console.log('Available assignment IDs:', printingAssignments.map(a => a._id.toString()));
-          console.log('Available glass_item_ids:', printingAssignments.map(a => a.glass_item_id?.toString()));
-          console.log('Looking for ID:', actualAssignmentId);
-          console.log('Original ID:', update.assignmentId);
-          throw new Error(`Printing assignment not found: ${actualAssignmentId}`);
-        }
-
-        console.log('Found assignment:', assignment._id.toString());
-
+        // ✅ FIXED: Validate quantity with proper error handling
         const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
         const remaining = assignment.quantity - currentCompleted;
 
@@ -180,9 +205,9 @@ export const updatePrintingTracking = async (req, res, next) => {
           );
         }
 
-        // ✅ FIXED: Use the actual assignment ID from the found assignment
-        await PrintingItem.findByIdAndUpdate(
-          assignment._id, // Use the actual assignment ID from database
+        // ✅ FIXED: Update existing assignment with proper validation
+        const updateResult = await PrintingItem.findByIdAndUpdate(
+          assignment._id,
           {
             $set: {
               'team_tracking.total_completed_qty': update.newTotalCompleted,
@@ -198,115 +223,135 @@ export const updatePrintingTracking = async (req, res, next) => {
           },
           { session, new: true }
         );
+
+        if (!updateResult) {
+          throw new Error(`Failed to update printing assignment: ${assignment._id}`);
+        }
+
+        console.log('✅ Successfully updated assignment:', assignment._id.toString());
       }
 
-      // Check item completion
-      const itemCompletionResult = await OrderItem.aggregate([
-        { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-        {
-          $lookup: {
-            from: 'printingitems',
-            localField: 'team_assignments.printing',
-            foreignField: '_id',
-            as: 'printing_assignments'
-          }
-        },
-        {
-          $addFields: {
-            allPrintingCompleted: {
-              $allElementsTrue: {
-                $map: {
-                  input: '$printing_assignments',
-                  as: 'assignment',
-                  in: {
-                    $gte: [
-                      { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                      '$$assignment.quantity'
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        { $project: { allPrintingCompleted: 1 } }
-      ]).session(session);
-
-      if (itemCompletionResult[0]?.allPrintingCompleted) {
-        await OrderItem.findByIdAndUpdate(
-          itemId,
-          { $set: { 'team_status.printing': 'Completed' } },
-          { session }
-        );
-
-        // Check if entire order is completed
-        const orderCompletionResult = await Order.aggregate([
-          { $match: { order_number: orderNumber } },
+      // ✅ FIXED: Better completion checking with error handling
+      try {
+        const itemCompletionResult = await OrderItem.aggregate([
+          { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
           {
             $lookup: {
-              from: 'orderitems',
-              localField: 'item_ids',
+              from: 'printingitems',
+              localField: 'team_assignments.printing',
               foreignField: '_id',
-              as: 'items',
-              pipeline: [
-                {
-                  $lookup: {
-                    from: 'printingitems',
-                    localField: 'team_assignments.printing',
-                    foreignField: '_id',
-                    as: 'printing_assignments'
-                  }
-                }
-              ]
+              as: 'printing_assignments'
             }
           },
           {
             $addFields: {
-              allItemsCompleted: {
-                $allElementsTrue: {
-                  $map: {
-                    input: '$items',
-                    as: 'item',
-                    in: {
-                      $cond: {
-                        if: { $gt: [{ $size: '$$item.printing_assignments' }, 0] },
-                        then: {
-                          $allElementsTrue: {
-                            $map: {
-                              input: '$$item.printing_assignments',
-                              as: 'assignment',
-                              in: {
-                                $gte: [
-                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                  '$$assignment.quantity'
-                                ]
+              allPrintingCompleted: {
+                $cond: {
+                  if: { $gt: [{ $size: '$printing_assignments' }, 0] },
+                  then: {
+                    $allElementsTrue: {
+                      $map: {
+                        input: '$printing_assignments',
+                        as: 'assignment',
+                        in: {
+                          $gte: [
+                            { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
+                            '$$assignment.quantity'
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  else: false
+                }
+              }
+            }
+          },
+          { $project: { allPrintingCompleted: 1 } }
+        ]).session(session);
+
+        if (itemCompletionResult[0]?.allPrintingCompleted) {
+          await OrderItem.findByIdAndUpdate(
+            itemId,
+            { $set: { 'team_status.printing': 'Completed' } },
+            { session }
+          );
+
+          console.log('✅ Item printing completed');
+
+          // ✅ FIXED: Check if entire order is completed
+          const orderCompletionResult = await Order.aggregate([
+            { $match: { order_number: orderNumber } },
+            {
+              $lookup: {
+                from: 'orderitems',
+                localField: 'item_ids',
+                foreignField: '_id',
+                as: 'items',
+                pipeline: [
+                  {
+                    $lookup: {
+                      from: 'printingitems',
+                      localField: 'team_assignments.printing',
+                      foreignField: '_id',
+                      as: 'printing_assignments'
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              $addFields: {
+                allItemsCompleted: {
+                  $allElementsTrue: {
+                    $map: {
+                      input: '$items',
+                      as: 'item',
+                      in: {
+                        $cond: {
+                          if: { $gt: [{ $size: '$$item.printing_assignments' }, 0] },
+                          then: {
+                            $allElementsTrue: {
+                              $map: {
+                                input: '$$item.printing_assignments',
+                                as: 'assignment',
+                                in: {
+                                  $gte: [
+                                    { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
+                                    '$$assignment.quantity'
+                                  ]
+                                }
                               }
                             }
-                          }
-                        },
-                        else: true
+                          },
+                          else: true
+                        }
                       }
                     }
                   }
                 }
               }
-            }
-          },
-          { $project: { allItemsCompleted: 1, order_status: 1 } }
-        ]).session(session);
+            },
+            { $project: { allItemsCompleted: 1, order_status: 1 } }
+          ]).session(session);
 
-        const orderResult = orderCompletionResult[0];
-        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-          await Order.findOneAndUpdate(
-            { order_number: orderNumber },
-            { $set: { order_status: 'Completed' } },
-            { session }
-          );
+          const orderResult = orderCompletionResult[0];
+          if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
+            await Order.findOneAndUpdate(
+              { order_number: orderNumber },
+              { $set: { order_status: 'Completed' } },
+              { session }
+            );
+            console.log('✅ Order completed');
+          }
         }
+      } catch (completionError) {
+        console.error('❌ Error checking completion status:', completionError);
+        // Don't throw here, just log - the update was successful
       }
     });
 
-    // Fetch updated order
+    // ✅ FIXED: Fetch updated order with better error handling
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
@@ -322,7 +367,10 @@ export const updatePrintingTracking = async (req, res, next) => {
       })
       .lean();
 
-    // Structure the response data similar to getPrintingOrders
+    if (!updatedOrder) {
+      throw new Error('Failed to fetch updated order');
+    }
+
     const responseData = {
       ...updatedOrder,
       item_ids: updatedOrder.item_ids.map(item => ({
@@ -372,11 +420,21 @@ export const updatePrintingTracking = async (req, res, next) => {
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
+
   } catch (error) {
-    console.error('Error updating printing tracking:', error);
-    if (error.message.includes('not found') || error.message.includes('exceeds')) {
+    console.error('❌ Error updating printing tracking:', error);
+    
+    // ✅ FIXED: Better error categorization
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, message: error.message });
+    }
+    if (error.message.includes('exceeds') || error.message.includes('required')) {
       return res.status(400).json({ success: false, message: error.message });
     }
+    if (error.message.includes('refresh')) {
+      return res.status(409).json({ success: false, message: error.message });
+    }
+    
     next(error);
   } finally {
     await session.endSession();
