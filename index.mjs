@@ -5,7 +5,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import './config/db.js';
 import routes from './routes/index.js';
-import { ObjectId } from 'mongodb';
+
 
 dotenv.config();
 
@@ -40,7 +40,6 @@ const teamMembers = {
   frosting: new Set()
 };
 
-// Define decoration sequences - ONLY start from glass completion
 const DECORATION_SEQUENCES = {
   'coating': ['coating'],
   'coating_printing': ['coating', 'printing'],
@@ -54,7 +53,6 @@ const DECORATION_SEQUENCES = {
   'frosting_printing_foiling': ['frosting', 'printing', 'foiling']
 };
 
-// Track processed items to prevent duplicates
 const processedItems = new Map();
 
 app.use('/api', routes);
@@ -145,7 +143,6 @@ io.on('connection', (socket) => {
       console.error('Error handling order notification:', error);
     }
   });
-
   socket.on('team-progress-updated', (progressData) => {
     console.log('📈 Team progress update received:', {
       order: progressData.orderNumber,
@@ -178,17 +175,14 @@ io.on('connection', (socket) => {
         message: `${team.toUpperCase()} team updated progress for ${itemName} in order #${orderNumber}`
       };
 
-      // Send to all dispatchers
       io.to('dispatchers').emit('team-progress-updated', notificationData);
       socket.broadcast.emit('team-progress-updated', notificationData);
 
-      // Check if this is a glass team completion and trigger sequential decoration flow
       if (team.toLowerCase() === 'glass') {
         console.log('🔄 Glass team completion detected, checking decoration sequence...');
         checkAndTriggerDecorationSequence(updatedOrder, orderNumber, customerName, dispatcherName);
       }
 
-      // Check if this is a decoration team completion and trigger next in sequence
       if (['printing', 'coating', 'foiling', 'frosting'].includes(team.toLowerCase())) {
         console.log(`🔄 ${team} team completion detected, checking next decoration team...`);
         checkAndTriggerNextDecorationTeam(updatedOrder, orderNumber, customerName, dispatcherName, team.toLowerCase());
@@ -202,205 +196,86 @@ io.on('connection', (socket) => {
   });
 
   function checkAndTriggerDecorationSequence(order, orderNumber, customerName, dispatcherName) {
-  console.log('🔍 Checking decoration sequence triggers for order:', orderNumber);
-  const teamDecorationGroups = {};
-
-  order.item_ids?.forEach(item => {
-    const glassAssignments = item.team_assignments?.glass || [];
-    console.log(`📋 Processing item ${item.name} with ${glassAssignments.length} glass assignments`);
-
-    glassAssignments.forEach(glassItem => {
-      // Create unique key to prevent duplicate processing
-      const itemKey = `${orderNumber}_${item._id}_${glassItem._id}`;
-
-      console.log(`🔍 Checking glass item: ${glassItem.glass_name}`);
-      console.log(`📊 Glass item status: ${glassItem.status}`);
-      console.log(`🎨 Glass item decoration: ${glassItem.decoration}`);
-
-      // ✅ FIXED: Check if glass is completed - this is the critical fix
-      if (glassItem.status?.toLowerCase() !== 'completed') {
-        console.log(`⏳ Glass item ${glassItem.glass_name} not completed yet - skipping decoration trigger`);
-        return;
-      }
-
-      // Check if already processed
-      if (processedItems.has(itemKey)) {
-        console.log(`⚠️ Glass item ${glassItem.glass_name} already processed, skipping`);
-        return;
-      }
-
-      const decorationType = glassItem.decoration;
-      if (!decorationType || decorationType === 'N/A' || !DECORATION_SEQUENCES[decorationType]) {
-        console.log(`❌ No valid decoration sequence for: ${decorationType}`);
-        return;
-      }
-
-      const decorationSequence = DECORATION_SEQUENCES[decorationType];
-      const firstDecorationTeam = decorationSequence[0];
-
-      console.log(`✅ Glass item ${glassItem.glass_name} ready for decoration`);
-      console.log(`🎯 Decoration sequence: ${decorationSequence.join(' → ')}`);
-      console.log(`🏁 First team: ${firstDecorationTeam}`);
-
-      // ✅ FIXED: Better check for existing decoration assignments
-      const existingAssignments = item.team_assignments?.[firstDecorationTeam] || [];
-      
-      // Check if there's already a ready assignment for this specific glass item
-      const hasReadyAssignment = existingAssignments.some(assignment => {
-        const assignmentGlassId = assignment.glass_item_id?.toString() || assignment._id?.toString();
-        const currentGlassId = glassItem._id?.toString();
-        
-        return assignmentGlassId === currentGlassId && assignment.ready_for_decoration;
-      });
-
-      if (hasReadyAssignment) {
-        console.log(`⚠️ Glass item ${glassItem.glass_name} already has ready ${firstDecorationTeam} assignment`);
-        return;
-      }
-
-      const groupKey = `${firstDecorationTeam}_${decorationType}`;
-      if (!teamDecorationGroups[groupKey]) {
-        teamDecorationGroups[groupKey] = {
-          team: firstDecorationTeam,
-          decorationType,
-          items: []
-        };
-      }
-
-      teamDecorationGroups[groupKey].items.push({
-        itemId: item._id,
-        itemName: item.name,
-        glassItem: {
-          ...glassItem,
-          itemId: item._id,
-          itemName: item.name
-        }
-      });
-
-      // Mark as processed
-      processedItems.set(itemKey, true);
-      console.log(`📦 Added glass item ${glassItem.glass_name} to ${groupKey} group`);
-    });
-  });
-
-  console.log(`📊 Team decoration groups found:`, Object.keys(teamDecorationGroups));
-
-  Object.values(teamDecorationGroups).forEach(group => {
-    if (group.items.length > 0) {
-      console.log(`🚀 Sending ${group.items.length} items to ${group.team} team for ${group.decorationType}`);
-      sendItemsToDecorationTeamWithAssignments(
-        order,
-        orderNumber,
-        customerName,
-        dispatcherName,
-        group.team,
-        group.decorationType,
-        group.items
-      );
-    }
-  });
-}
-
-  function checkAndTriggerNextDecorationTeam(order, orderNumber, customerName, dispatcherName, completedTeam) {
-    console.log(`🔍 Checking next decoration team for ${completedTeam} completion`);
-
+    console.log('🔍 Checking decoration sequence triggers for order:', orderNumber);
     const teamDecorationGroups = {};
 
     order.item_ids?.forEach(item => {
-      console.log(`🔍 Processing item: ${item.name}`);
+      const glassAssignments = item.team_assignments?.glass || [];
+      console.log(`📋 Processing item ${item.name} with ${glassAssignments.length} glass assignments`);
 
-      // Get completed assignments from the current team
-      const completedTeamAssignments = item.team_assignments?.[completedTeam] || [];
+      glassAssignments.forEach(glassItem => {
+        // Create unique key to prevent duplicate processing
+        const itemKey = `${orderNumber}_${item._id}_${glassItem._id}`;
 
-      completedTeamAssignments.forEach(assignment => {
-        console.log(`📋 Checking ${completedTeam} assignment: ${assignment.glass_name || assignment[`${completedTeam}_name`]}`);
+        console.log(`🔍 Checking glass item: ${glassItem.glass_name}`);
+        console.log(`📊 Glass item status: ${glassItem.status}`);
+        console.log(`🎨 Glass item decoration: ${glassItem.decoration}`);
 
-        // Only process completed assignments
-        if (assignment.status?.toLowerCase() !== 'completed') {
-          console.log(`⏳ Assignment not completed yet`);
+        if (glassItem.status?.toLowerCase() !== 'completed') {
+          console.log(`⏳ Glass item ${glassItem.glass_name} not completed yet - skipping decoration trigger`);
           return;
         }
 
-        // Create unique key for this assignment transition
-        const transitionKey = `${orderNumber}_${item._id}_${assignment._id}_${completedTeam}`;
-
-        if (processedItems.has(transitionKey)) {
-          console.log(`⚠️ Assignment transition already processed, skipping`);
+        if (processedItems.has(itemKey)) {
+          console.log(`⚠️ Glass item ${glassItem.glass_name} already processed, skipping`);
           return;
         }
 
-        const decorationType = assignment.decoration;
-        if (!decorationType || !DECORATION_SEQUENCES[decorationType]) {
+        const decorationType = glassItem.decoration;
+        if (!decorationType || decorationType === 'N/A' || !DECORATION_SEQUENCES[decorationType]) {
           console.log(`❌ No valid decoration sequence for: ${decorationType}`);
           return;
         }
 
         const decorationSequence = DECORATION_SEQUENCES[decorationType];
-        const currentTeamIndex = decorationSequence.indexOf(completedTeam);
+        const firstDecorationTeam = decorationSequence[0];
 
-        console.log(`📋 Decoration sequence: ${decorationSequence.join(' → ')}`);
-        console.log(`📍 Current team index: ${currentTeamIndex}`);
+        console.log(`✅ Glass item ${glassItem.glass_name} ready for decoration`);
+        console.log(`🎯 Decoration sequence: ${decorationSequence.join(' → ')}`);
+        console.log(`🏁 First team: ${firstDecorationTeam}`);
 
-        // Check if there's a next team in the sequence
-        if (currentTeamIndex === -1 || currentTeamIndex >= decorationSequence.length - 1) {
-          console.log(`🏁 No next team in sequence for ${decorationType}`);
+        // Check if this specific glass item already has a ready assignment
+        const existingAssignments = item.team_assignments?.[firstDecorationTeam] || [];
+        const hasReadyAssignment = existingAssignments.some(assignment => {
+          const assignmentGlassId = assignment.glass_item_id?.toString() || assignment._id?.toString();
+          const currentGlassId = glassItem._id?.toString();
+          return assignmentGlassId === currentGlassId && assignment.ready_for_decoration;
+        });
+
+        if (hasReadyAssignment) {
+          console.log(`⚠️ Glass item ${glassItem.glass_name} already has ready ${firstDecorationTeam} assignment`);
           return;
         }
 
-        const nextTeam = decorationSequence[currentTeamIndex + 1];
-        console.log(`➡️ Next team: ${nextTeam}`);
-
-        // FIX: Get the actual glass item ID from the assignment
-        const actualGlassItemId = assignment.glass_item_id || assignment._id;
-        console.log(`🔍 Looking for next team assignment with glass_item_id: ${actualGlassItemId}`);
-
-        // Check if next team already has assignments for this glass item
-        const nextTeamAssignments = item.team_assignments?.[nextTeam] || [];
-        const hasExistingAssignment = nextTeamAssignments.some(nextAssignment =>
-          nextAssignment.glass_item_id?.toString() === actualGlassItemId?.toString() &&
-          nextAssignment.ready_for_decoration
-        );
-
-        if (hasExistingAssignment) {
-          console.log(`⚠️ Next team ${nextTeam} already has ready assignment for this item`);
-          return;
-        }
-
-        // Group by team and decoration type
-        const groupKey = `${nextTeam}_${decorationType}`;
+        const groupKey = `${firstDecorationTeam}_${decorationType}`;
         if (!teamDecorationGroups[groupKey]) {
           teamDecorationGroups[groupKey] = {
-            team: nextTeam,
+            team: firstDecorationTeam,
             decorationType,
             items: []
           };
         }
 
-        // Add this assignment to the group - pass the actual glass item ID
         teamDecorationGroups[groupKey].items.push({
           itemId: item._id,
           itemName: item.name,
           glassItem: {
-            ...assignment,
-            _id: actualGlassItemId,  // Use the actual glass item ID
-            glass_item_id: actualGlassItemId,  // Ensure this is set correctly
+            ...glassItem,
             itemId: item._id,
             itemName: item.name
           }
         });
 
-        // Mark transition as processed
-        processedItems.set(transitionKey, true);
-        console.log(`📦 Added assignment to ${groupKey} group with glass_item_id: ${actualGlassItemId}`);
+        processedItems.set(itemKey, true);
+        console.log(`📦 Added glass item ${glassItem.glass_name} to ${groupKey} group`);
       });
     });
 
-    console.log(`📊 Next team decoration groups:`, Object.keys(teamDecorationGroups));
+    console.log(`📊 Team decoration groups found:`, Object.keys(teamDecorationGroups));
 
-    // Send items to their respective next decoration teams
     Object.values(teamDecorationGroups).forEach(group => {
       if (group.items.length > 0) {
-        console.log(`🚀 Sending ${group.items.length} items from ${completedTeam} to ${group.team} team`);
+        console.log(`🚀 Sending ${group.items.length} items to ${group.team} team for ${group.decorationType}`);
         sendItemsToDecorationTeamWithAssignments(
           order,
           orderNumber,
@@ -414,150 +289,232 @@ io.on('connection', (socket) => {
     });
   }
 
- async function sendItemsToDecorationTeamWithAssignments(order, orderNumber, customerName, dispatcherName, teamName, decorationType, itemsWithGlass) {
-  console.log(`📤 Sending items to ${teamName} team for ${decorationType}`);
+  function checkAndTriggerNextDecorationTeam(order, orderNumber, customerName, dispatcherName, completedTeam) {
+  console.log(`🔍 Checking next decoration team for ${completedTeam} completion`);
 
-  if (!teamMembers[teamName] || teamMembers[teamName].size === 0) {
-    console.log(`⚠️ No members online for ${teamName} team`);
-    return;
-  }
+  const teamDecorationGroups = {};
 
-  try {
-    const modifiedOrder = {
-      ...order,
-      item_ids: []
-    };
+  order.item_ids?.forEach(item => {
+    console.log(`🔍 Processing item: ${item.name}`);
+    const completedAssignments = item.team_assignments?.[completedTeam] || [];
 
-    for (const item of order.item_ids) {
-      const relevantItems = itemsWithGlass.filter(d => d.itemId.toString() === item._id.toString());
+    completedAssignments.forEach(assignment => {
+      const status = assignment.status?.toLowerCase();
+      const glassItemId = assignment.glass_item_id || assignment._id;
+      const transitionKey = `${orderNumber}_${item._id}_${glassItemId}_${completedTeam}`;
 
-      if (relevantItems.length === 0) {
-        continue; // Skip items that don't have assignments for this team
+      console.log(`📋 Checking ${completedTeam} assignment: ${assignment.glass_name || assignment[`${completedTeam}_name`]}`);
+      console.log(`📊 Status: ${status}`);
+
+      // ✅ Check 1: This team must be completed
+      if (status !== 'completed') {
+        console.log(`⏳ Assignment not completed yet — skipping`);
+        return;
       }
 
-      const validAssignments = [];
+      // ✅ Check 2: Already processed transition?
+      if (processedItems.has(transitionKey)) {
+        console.log(`⚠️ Assignment transition already processed — skipping`);
+        return;
+      }
 
-      for (const { glassItem } of relevantItems) {
-        try {
-          // ✅ FIXED: Better glass item validation
-          const glassItemId = glassItem._id || glassItem.glass_item_id;
-          
-          if (!glassItemId) {
-            console.log(`❌ No valid glass item ID found for ${glassItem.glass_name}`);
-            continue;
-          }
-if (glassItem.status?.toLowerCase() !== 'completed') {
-  console.log(`❌ Glass item ${glassItem.glass_name} is not completed (from payload), skipping decoration assignment`);
-  continue;
+      const decorationType = assignment.decoration;
+      if (!decorationType || !DECORATION_SEQUENCES[decorationType]) {
+        console.log(`❌ No valid decoration sequence for: ${decorationType}`);
+        return;
+      }
+
+      const decorationSequence = DECORATION_SEQUENCES[decorationType];
+      const currentIndex = decorationSequence.indexOf(completedTeam);
+
+      if (currentIndex === -1 || currentIndex >= decorationSequence.length - 1) {
+        console.log(`🏁 No next team in sequence for ${decorationType}`);
+        return;
+      }
+
+      const nextTeam = decorationSequence[currentIndex + 1];
+      console.log(`➡️ Next team: ${nextTeam}`);
+
+      // ✅ NEW: Check if corresponding glass assignment is completed
+      const glassAssignments = item.team_assignments?.glass || [];
+      const matchingGlass = glassAssignments.find(glass => {
+        const id = glass._id?.toString();
+        return id === glassItemId?.toString();
+      });
+
+      if (!matchingGlass || matchingGlass.status?.toLowerCase() !== 'completed') {
+        console.log(`🚫 Skipping — glass item ${glassItemId} is not completed yet`);
+        return;
+      }
+
+      // ✅ Check if next team already has assignment
+      const nextTeamAssignments = item.team_assignments?.[nextTeam] || [];
+      const hasReady = nextTeamAssignments.some(nextAssign => {
+        const nextId = nextAssign.glass_item_id || nextAssign._id;
+        return nextId?.toString() === glassItemId?.toString() && nextAssign.ready_for_decoration;
+      });
+
+      if (hasReady) {
+        console.log(`⚠️ ${nextTeam} already has ready assignment for this glass`);
+        return;
+      }
+
+      const groupKey = `${nextTeam}_${decorationType}`;
+      if (!teamDecorationGroups[groupKey]) {
+        teamDecorationGroups[groupKey] = {
+          team: nextTeam,
+          decorationType,
+          items: []
+        };
+      }
+
+      teamDecorationGroups[groupKey].items.push({
+        itemId: item._id,
+        itemName: item.name,
+        glassItem: {
+          ...assignment,
+          _id: glassItemId,
+          glass_item_id: glassItemId,
+          itemId: item._id,
+          itemName: item.name
+        }
+      });
+
+      processedItems.set(transitionKey, true);
+      console.log(`📦 Added to ${nextTeam} group: ${glassItemId}`);
+    });
+  });
+
+  console.log(`📊 Next team decoration groups:`, Object.keys(teamDecorationGroups));
+
+  Object.values(teamDecorationGroups).forEach(group => {
+    if (group.items.length > 0) {
+      console.log(`🚀 Sending ${group.items.length} items to ${group.team} team`);
+      sendItemsToDecorationTeamWithAssignments(
+        order,
+        orderNumber,
+        customerName,
+        dispatcherName,
+        group.team,
+        group.decorationType,
+        group.items
+      );
+    }
+  });
 }
 
 
-          // Find existing decoration assignment
-          let existingAssignment = null;
+  async function sendItemsToDecorationTeamWithAssignments(order, orderNumber, customerName, dispatcherName, teamName, decorationType, itemsWithGlass) {
+    console.log(`📤 Sending items to ${teamName} team for ${decorationType}`);
+    console.log(`📋 Items to process:`, itemsWithGlass.length);
 
-          if (teamName === 'printing') {
-            const PrintingItem = (await import('./models/PrintingItem.js')).default;
-            existingAssignment = await PrintingItem.findOne({
-              glass_item_id: glassItemId,
-              itemId: item._id,
-              orderNumber: orderNumber
-            });
-          } else if (teamName === 'coating') {
-            const CoatingItem = (await import('./models/CoatingItem.js')).default;
-            existingAssignment = await CoatingItem.findOne({
-              glass_item_id: glassItemId,
-              itemId: item._id,
-              orderNumber: orderNumber
-            });
-          } else if (teamName === 'foiling') {
-            const FoilingItem = (await import('./models/FoilingItem.js')).default;
-            existingAssignment = await FoilingItem.findOne({
-              glass_item_id: glassItemId,
-              itemId: item._id,
-              orderNumber: orderNumber
-            });
-          } else if (teamName === 'frosting') {
-            const FrostingItem = (await import('./models/FrostingItem.js')).default;
-            existingAssignment = await FrostingItem.findOne({
-              glass_item_id: glassItemId,
-              itemId: item._id,
-              orderNumber: orderNumber
-            });
-          }
-
-          if (existingAssignment) {
-            // Only update if not already ready for decoration
-            if (!existingAssignment.ready_for_decoration) {
-              const updateData = {
-                status: 'Pending',
-                ready_for_decoration: true,
-                updatedAt: new Date().toISOString()
-              };
-
-              if (teamName === 'printing') {
-                const PrintingItem = (await import('./models/PrintingItem.js')).default;
-                await PrintingItem.findByIdAndUpdate(existingAssignment._id, updateData);
-              } else if (teamName === 'coating') {
-                const CoatingItem = (await import('./models/CoatingItem.js')).default;
-                await CoatingItem.findByIdAndUpdate(existingAssignment._id, updateData);
-              } else if (teamName === 'foiling') {
-                const FoilingItem = (await import('./models/FoilingItem.js')).default;
-                await FoilingItem.findByIdAndUpdate(existingAssignment._id, updateData);
-              } else if (teamName === 'frosting') {
-                const FrostingItem = (await import('./models/FrostingItem.js')).default;
-                await FrostingItem.findByIdAndUpdate(existingAssignment._id, updateData);
-              }
-
-              console.log(`✅ Updated existing ${teamName} assignment for completed glass item:`, existingAssignment._id);
-            } else {
-              console.log(`✅ Found existing ${teamName} assignment (already ready):`, existingAssignment._id);
-            }
-
-            const updatedAssignment = await getUpdatedAssignment(teamName, existingAssignment._id);
-            if (updatedAssignment) {
-              validAssignments.push(updatedAssignment);
-            }
-          } else {
-            console.log(`⚠️ No existing ${teamName} assignment found for glass item ${glassItemId}`);
-          }
-        } catch (error) {
-          console.error(`❌ Error processing ${teamName} assignment:`, error);
-        }
-      }
-
-      if (validAssignments.length === 0) {
-        console.log(`❌ No valid assignments found for item ${item._id} in ${teamName} team`);
-        continue;
-      }
-
-      // Remove duplicates based on _id
-      const uniqueAssignments = validAssignments.filter((assignment, index, self) =>
-        index === self.findIndex(a => a._id.toString() === assignment._id.toString())
-      );
-
-      console.log(`📋 Found ${uniqueAssignments.length} valid assignments for item ${item.name}`);
-
-      // Add to modified order with only this team's assignments
-      modifiedOrder.item_ids.push({
-        _id: item._id,
-        order_number: item.order_number,
-        name: item.name,
-        createdAt: item.createdAt,
-        updatedAt: item.updatedAt,
-        __v: item.__v,
-        // Only include assignments for THIS team
-        team_assignments: {
-          [teamName]: uniqueAssignments
-        }
-      });
+    if (!teamMembers[teamName] || teamMembers[teamName].size === 0) {
+      console.log(`⚠️ No members online for ${teamName} team`);
+      return;
     }
 
-    console.log(`📦 Final filtered order for ${teamName}:`, {
-      itemsCount: modifiedOrder.item_ids.length,
-      totalAssignments: modifiedOrder.item_ids.reduce((sum, item) => sum + (item.team_assignments?.[teamName]?.length || 0), 0)
-    });
+    try {
+      const TeamModel = await getTeamModel(teamName);
+      const relevantItems = [];
 
-    if (modifiedOrder.item_ids.length > 0) {
+      // Process only items that have completed glass assignments
+      for (const { itemId, itemName, glassItem } of itemsWithGlass) {
+        const originalItem = order.item_ids.find(item => item._id.toString() === itemId.toString());
+        if (!originalItem) {
+          console.log(`❌ Original item not found for ${itemId}`);
+          continue;
+        }
+
+        const glassItemId = glassItem._id || glassItem.glass_item_id;
+        if (!glassItemId) {
+          console.log(`❌ No glass item ID for ${itemName}`);
+          continue;
+        }
+
+        console.log(`🔍 Processing item: ${itemName}, Glass: ${glassItem.glass_name}`);
+
+        // Check if assignment already exists
+        let existingAssignment = await TeamModel.findOne({
+          glass_item_id: glassItemId,
+          itemId: itemId,
+          orderNumber
+        });
+
+        let assignmentToInclude;
+
+        if (existingAssignment) {
+          console.log(`✅ Found existing ${teamName} assignment for ${glassItem.glass_name}`);
+
+          // Update to ready if not already
+          if (!existingAssignment.ready_for_decoration) {
+            await TeamModel.findByIdAndUpdate(existingAssignment._id, {
+              status: 'Pending',
+              ready_for_decoration: true,
+              updatedAt: new Date().toISOString()
+            });
+            console.log(`✅ Updated ${teamName} assignment to ready:`, existingAssignment._id);
+          }
+
+          assignmentToInclude = await TeamModel.findById(existingAssignment._id).lean();
+        } else {
+          console.log(`❌ No existing ${teamName} assignment found for ${glassItem.glass_name}`);
+          continue;
+        }
+
+        // Enrich assignment with glass data
+        const enrichedAssignment = {
+          ...assignmentToInclude,
+          glass_name: glassItem.glass_name,
+          bottle: glassItem.glass_name,
+          weight: glassItem.weight,
+          neck_size: glassItem.neck_size,
+          decoration: glassItem.decoration,
+          decoration_no: glassItem.decoration_no,
+          glass_item_id: glassItemId,
+          isNewAssignment: false // Mark as existing assignment
+        };
+
+        // Check if this item already exists in our relevant items
+        const existingItemIndex = relevantItems.findIndex(item => item._id.toString() === itemId.toString());
+
+        if (existingItemIndex >= 0) {
+          // Add assignment to existing item
+          relevantItems[existingItemIndex].team_assignments[teamName].push(enrichedAssignment);
+        } else {
+          // Create new item entry
+          relevantItems.push({
+            _id: originalItem._id,
+            order_number: originalItem.order_number,
+            name: originalItem.name,
+            createdAt: originalItem.createdAt,
+            updatedAt: originalItem.updatedAt,
+            __v: originalItem.__v,
+            team_assignments: {
+              [teamName]: [enrichedAssignment]
+            }
+          });
+        }
+
+        console.log(`📦 Added ${teamName} assignment for ${itemName} - ${glassItem.glass_name}`);
+      }
+
+      if (relevantItems.length === 0) {
+        console.log(`❌ No valid items to send to ${teamName}`);
+        return;
+      }
+
+      // Remove duplicates within each item's assignments
+      relevantItems.forEach(item => {
+        if (item.team_assignments[teamName]) {
+          item.team_assignments[teamName] = removeDuplicates(item.team_assignments[teamName], '_id');
+        }
+      });
+
+      const filteredOrder = {
+        ...order,
+        item_ids: relevantItems
+      };
+
       const notification = {
         type: 'decoration-order-ready',
         orderNumber,
@@ -565,7 +522,7 @@ if (glassItem.status?.toLowerCase() !== 'completed') {
         dispatcherName,
         timestamp: new Date().toISOString(),
         message: `Order #${orderNumber} ready for ${teamName.toUpperCase()} team (${decorationType})`,
-        orderData: modifiedOrder,
+        orderData: filteredOrder,
         decorationType,
         sequencePosition: DECORATION_SEQUENCES[decorationType].indexOf(teamName) + 1,
         totalSequenceSteps: DECORATION_SEQUENCES[decorationType].length,
@@ -574,47 +531,50 @@ if (glassItem.status?.toLowerCase() !== 'completed') {
       };
 
       io.to(teamName).emit('decoration-order-ready', notification);
-      io.to(teamName).emit('new-order', {
-        ...notification,
-        type: 'new-order'
+      io.to(teamName).emit('new-order', { ...notification, type: 'new-order' });
+
+      console.log(`🚀 Successfully sent to ${teamName}:`, {
+        items: relevantItems.length,
+        totalAssignments: relevantItems.reduce((sum, item) => sum + (item.team_assignments[teamName]?.length || 0), 0)
       });
 
-      console.log(`🚀 Sent to ${teamName} → ${itemsWithGlass.length} items with valid completed glass assignments`);
-    } else {
-      console.log(`❌ No valid assignments to send to ${teamName} - all glass items must be completed first`);
-    }
-
-  } catch (error) {
-    console.error(`❌ Error finding/updating ${teamName} assignments:`, error);
-  }
-}
-
-  async function getUpdatedAssignment(teamName, assignmentId) {
-    try {
-      if (teamName === 'printing') {
-        const PrintingItem = (await import('./models/PrintingItem.js')).default;
-        return await PrintingItem.findById(assignmentId)
-          .populate('glass_item_id itemId')
-          .lean();
-      } else if (teamName === 'coating') {
-        const CoatingItem = (await import('./models/CoatingItem.js')).default;
-        return await CoatingItem.findById(assignmentId)
-          .populate('glass_item_id itemId')
-          .lean();
-      } else if (teamName === 'foiling') {
-        const FoilingItem = (await import('./models/FoilingItem.js')).default;
-        return await FoilingItem.findById(assignmentId)
-          .populate('glass_item_id itemId')
-          .lean();
-      } else if (teamName === 'frosting') {
-        const FrostingItem = (await import('./models/FrostingItem.js')).default;
-        return await FrostingItem.findById(assignmentId)
-          .populate('glass_item_id itemId')
-          .lean();
-      }
     } catch (error) {
-      return null;
+      console.error(`❌ Error sending assignments to ${teamName}:`, error);
     }
+  }
+
+
+  function removeDuplicates(array, key) {
+    const seen = new Set();
+    return array.filter(item => {
+      const id = item[key]?.toString();
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }
+
+  async function getTeamModel(teamName) {
+    if (teamName === 'printing') {
+      return (await import('./models/PrintingItem.js')).default;
+    } else if (teamName === 'coating') {
+      return (await import('./models/CoatingItem.js')).default;
+    } else if (teamName === 'foiling') {
+      return (await import('./models/FoilingItem.js')).default;
+    } else if (teamName === 'frosting') {
+      return (await import('./models/FrostingItem.js')).default;
+    }
+    throw new Error(`Unknown team name: ${teamName}`);
+  }
+
+  function removeDuplicates(array, key) {
+    const seen = new Set();
+    return array.filter(item => {
+      const id = item[key]?.toString();
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
   }
 
 
@@ -780,8 +740,11 @@ if (glassItem.status?.toLowerCase() !== 'completed') {
   function findGlassEntry(items, glassItemId) {
     for (const item of items) {
       const glassAssignments = item.team_assignments?.glass || [];
-      const match = glassAssignments.find(entry => entry._id?.toString() === glassItemId?.toString());
-      if (match) return match;
+      for (const glass of glassAssignments) {
+        if (glass._id?.toString() === glassItemId?.toString()) {
+          return glass;
+        }
+      }
     }
     return null;
   }

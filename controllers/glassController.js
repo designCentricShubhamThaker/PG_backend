@@ -128,7 +128,7 @@ export const updateGlassTracking = async (req, res, next) => {
         );
       }
 
-      // Check item completion
+      // Check if all glass items for this item are completed
       const itemCompletionResult = await OrderItem.aggregate([
         { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
         {
@@ -167,7 +167,7 @@ export const updateGlassTracking = async (req, res, next) => {
           { session }
         );
 
-        // Check if entire order is completed
+        // Now check if all items in the order are complete
         const orderCompletionResult = await Order.aggregate([
           { $match: { order_number: orderNumber } },
           {
@@ -234,25 +234,16 @@ export const updateGlassTracking = async (req, res, next) => {
       }
     });
 
-    // 🔁 Now fetch updated order after transaction ends
+    // ✅ Fetch updated full order (no filtering only glass!)
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.glass': { $exists: true, $ne: [] } },
         populate: {
           path: 'team_assignments.glass',
           model: 'GlassItem'
         }
       })
       .lean();
-
-    const responseData = {
-      ...updatedOrder,
-      item_ids: updatedOrder.item_ids.map(item => ({
-        ...item,
-        team_assignments: { glass: item.team_assignments.glass }
-      }))
-    };
 
     const updatedAssignments = updatesArray.map(update => ({
       assignmentId: update.assignmentId,
@@ -264,7 +255,7 @@ export const updateGlassTracking = async (req, res, next) => {
       success: true,
       message: 'Glass tracking updated successfully',
       data: {
-        order: responseData,
+        order: updatedOrder, // ✅ Send full order (with all team assignments!)
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
