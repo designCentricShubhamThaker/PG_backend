@@ -351,60 +351,23 @@ export const updatePrintingTracking = async (req, res, next) => {
       }
     });
 
-    // ✅ FIXED: Fetch updated order with better error handling
+    // ✅ CRITICAL FIX: Fetch full order with ALL team assignments for decoration sequence
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.printing': { $exists: true, $ne: [] } },
-        populate: {
-          path: 'team_assignments.printing',
-          model: 'PrintingItem',
-          populate: {
-            path: 'glass_item_id',
-            model: 'GlassItem'
-          }
-        }
+        populate: [
+          { path: 'team_assignments.glass', model: 'GlassItem' },
+          { path: 'team_assignments.printing', model: 'PrintingItem' },
+          { path: 'team_assignments.foiling', model: 'FoilingItem' },
+          { path: 'team_assignments.coating', model: 'CoatingItem' },
+          { path: 'team_assignments.frosting', model: 'FrostingItem' }
+        ]
       })
       .lean();
 
     if (!updatedOrder) {
       throw new Error('Failed to fetch updated order');
     }
-
-    const responseData = {
-      ...updatedOrder,
-      item_ids: updatedOrder.item_ids.map(item => ({
-        ...item,
-        team_assignments: {
-          printing: item.team_assignments.printing.map(printingItem => {
-            const glassItem = printingItem.glass_item_id;
-            return {
-              _id: printingItem._id,
-              itemId: printingItem.itemId,
-              orderNumber: printingItem.orderNumber,
-              glass_item_id: glassItem._id,
-              glass_name: glassItem.glass_name,
-              quantity: glassItem.quantity,
-              weight: glassItem.weight,
-              neck_size: glassItem.neck_size,
-              decoration: glassItem.decoration,
-              decoration_no: glassItem.decoration_no,
-              decoration_details: glassItem.decoration_details,
-              team: "Printing Team",
-              status: printingItem.status || 'Pending',
-              team_tracking: printingItem.team_tracking || {
-                total_completed_qty: 0,
-                completed_entries: [],
-                last_updated: null
-              },
-              createdAt: printingItem.createdAt,
-              updatedAt: printingItem.updatedAt,
-              __v: printingItem.__v
-            };
-          })
-        }
-      }))
-    };
 
     const updatedAssignments = updatesArray.map(update => ({
       assignmentId: update.assignmentId,
@@ -416,7 +379,7 @@ export const updatePrintingTracking = async (req, res, next) => {
       success: true,
       message: 'Printing tracking updated successfully',
       data: {
-        order: responseData,
+        order: updatedOrder, // ✅ Send full order (with all team assignments!)
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });

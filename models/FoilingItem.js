@@ -11,6 +11,10 @@ const FoilingItemSchema = new mongoose.Schema({
     enum: ['Pending', 'In Progress', 'Completed'],
     default: 'Pending'
   },
+  ready_for_decoration: {
+    type: Boolean,
+    default: false
+  },
   team_tracking: teamTrackingSchema
 }, { timestamps: true });
 

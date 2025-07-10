@@ -30,9 +30,29 @@ export const getAllOrders = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
-        },
+        populate: [
+          { path: 'team_assignments.glass' },
+          { path: 'team_assignments.caps' },
+          { path: 'team_assignments.boxes' },
+          { path: 'team_assignments.pumps' },
+          // ✅ FIXED: Properly populate decoration teams with glass_item_id
+          {
+            path: 'team_assignments.coating',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.printing',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.foiling',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.frosting',
+            populate: { path: 'glass_item_id' }
+          }
+        ]
       });
 
     res.status(200).json({
@@ -274,7 +294,6 @@ export const createOrder = async (req, res, next) => {
     await session.commitTransaction();
     session.endSession();
 
-    // Fetch the fully populated order after creation
     const populatedOrder = await Order.findById(newOrder._id)
       .populate({
         path: 'item_ids',
@@ -283,12 +302,29 @@ export const createOrder = async (req, res, next) => {
           { path: 'team_assignments.caps' },
           { path: 'team_assignments.boxes' },
           { path: 'team_assignments.pumps' },
-          { path: 'team_assignments.coating' },
-          { path: 'team_assignments.printing' },
-          { path: 'team_assignments.foiling' },
-          { path: 'team_assignments.frosting' }
+
+          // 🔁 These are the ones missing deep population:
+          {
+            path: 'team_assignments.coating',
+            populate: { path: 'glass_item_id' }, // ✅ so glass data appears
+          },
+          {
+            path: 'team_assignments.printing',
+            populate: { path: 'glass_item_id' },
+          },
+          {
+            path: 'team_assignments.foiling',
+            populate: { path: 'glass_item_id' },
+          },
+          {
+            path: 'team_assignments.frosting',
+            populate: { path: 'glass_item_id' },
+          }
         ]
       });
+
+
+
 
     res.status(201).json({
       success: true,
@@ -329,7 +365,12 @@ export const createOrderItem = async (req, res, next) => {
         glass: [],
         caps: [],
         boxes: [],
-        pumps: []
+        pumps: [],
+        // ✅ FIXED: Include decoration teams
+        coating: [],
+        printing: [],
+        foiling: [],
+        frosting: []
       }
     });
 
@@ -341,8 +382,30 @@ export const createOrderItem = async (req, res, next) => {
     await session.commitTransaction();
     session.endSession();
 
+    // ✅ FIXED: Properly populate all team assignments including decoration teams
     const populatedItem = await OrderItem.findById(orderItem._id)
-      .populate('team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps');
+      .populate([
+        { path: 'team_assignments.glass' },
+        { path: 'team_assignments.caps' },
+        { path: 'team_assignments.boxes' },
+        { path: 'team_assignments.pumps' },
+        {
+          path: 'team_assignments.coating',
+          populate: { path: 'glass_item_id' }
+        },
+        {
+          path: 'team_assignments.printing',
+          populate: { path: 'glass_item_id' }
+        },
+        {
+          path: 'team_assignments.foiling',
+          populate: { path: 'glass_item_id' }
+        },
+        {
+          path: 'team_assignments.frosting',
+          populate: { path: 'glass_item_id' }
+        }
+      ]);
 
     res.status(201).json({ success: true, data: populatedItem });
   } catch (error) {
@@ -704,16 +767,16 @@ export const deleteOrder = async (req, res, next) => {
     }
     const orderItems = await OrderItem.find({ order_number: order.order_number });
 
-   for (const item of orderItems) {
-  await GlassItem.deleteMany({ itemId: item._id }, { session });
-  await CapItem.deleteMany({ itemId: item._id }, { session });
-  await BoxItem.deleteMany({ itemId: item._id }, { session });
-  await PumpItem.deleteMany({ itemId: item._id }, { session });
-  await PrintingItem.deleteMany({ itemId: item._id }, { session });
-  await CoatingItem.deleteMany({ itemId: item._id }, { session });
-  await FoilingItem.deleteMany({ itemId: item._id }, { session });
-  await FrostingItem.deleteMany({ itemId: item._id }, { session }); // ✅ FIXED
-}
+    for (const item of orderItems) {
+      await GlassItem.deleteMany({ itemId: item._id }, { session });
+      await CapItem.deleteMany({ itemId: item._id }, { session });
+      await BoxItem.deleteMany({ itemId: item._id }, { session });
+      await PumpItem.deleteMany({ itemId: item._id }, { session });
+      await PrintingItem.deleteMany({ itemId: item._id }, { session });
+      await CoatingItem.deleteMany({ itemId: item._id }, { session });
+      await FoilingItem.deleteMany({ itemId: item._id }, { session });
+      await FrostingItem.deleteMany({ itemId: item._id }, { session }); // ✅ FIXED
+    }
 
     await order.deleteOne({ session });
     await session.commitTransaction();

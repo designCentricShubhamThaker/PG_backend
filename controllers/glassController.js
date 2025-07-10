@@ -19,11 +19,15 @@ export const getGlassOrders = async (req, res, next) => {
     const orders = await Order.find(filter)
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass',
-          model: 'GlassItem'
-        }
+        populate: [
+          { path: 'team_assignments.glass', model: 'GlassItem' },
+          { path: 'team_assignments.printing', model: 'PrintingItem' },
+          { path: 'team_assignments.foiling', model: 'FoilingItem' },
+          { path: 'team_assignments.coating', model: 'CoatingItem' },
+          { path: 'team_assignments.frosting', model: 'FrostingItem' }
+        ]
       })
+
       .lean();
 
     const filteredOrders = orders
@@ -234,16 +238,19 @@ export const updateGlassTracking = async (req, res, next) => {
       }
     });
 
-    // ✅ Fetch updated full order (no filtering only glass!)
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass',
-          model: 'GlassItem'
-        }
+        populate: [
+          { path: 'team_assignments.glass', model: 'GlassItem' },
+          { path: 'team_assignments.printing', model: 'PrintingItem' },
+          { path: 'team_assignments.foiling', model: 'FoilingItem' },
+          { path: 'team_assignments.coating', model: 'CoatingItem' },
+          { path: 'team_assignments.frosting', model: 'FrostingItem' }
+        ]
       })
       .lean();
+
 
     const updatedAssignments = updatesArray.map(update => ({
       assignmentId: update.assignmentId,
