@@ -14,7 +14,7 @@ import customerRoutes from './customerRoutes.js';
 import TeamOrderRoutes from './TeamOrderRoutes.js'; 
 import printingRoutes from './printingRoutes.js'; 
 import foilingRoutes from './foilingRoutes.js'; 
-import coatingRoutes from './printingRoutes.js'; 
+import coatingRoutes from './coatingRoutes.js'; 
 import frostingRoutes from './frostingRoutes.js'; 
 
 const router = express.Router();
