@@ -493,16 +493,34 @@ function getDecorationOrder(order, teamName, glassItemId) {
     const teamAssignments = item.team_assignments?.[teamName] || [];
 
     // Filter assignments for the specific glass item
-    const relevantAssignments = teamAssignments.filter(assignment => {
-      const assignmentGlassId = assignment.glass_item_id?._id || assignment.glass_item_id;
-      const isMatch = assignmentGlassId?.toString() === glassItemId?.toString();
+    // const relevantAssignments = teamAssignments.filter(assignment => {
+    //   const assignmentGlassId = assignment.glass_item_id?._id || assignment.glass_item_id;
+    //   const isMatch = assignmentGlassId?.toString() === glassItemId?.toString();
 
-      if (isMatch) {
-        console.log(`✅ Found matching assignment for glass ${glassItemId} in ${teamName} team`);
-      }
+    //   if (isMatch) {
+    //     console.log(`✅ Found matching assignment for glass ${glassItemId} in ${teamName} team`);
+    //   }
 
-      return isMatch;
-    });
+    //   return isMatch;
+    // });
+
+
+    const relevantAssignments = teamAssignments
+  .filter(assignment => {
+    const assignmentGlassId = assignment.glass_item_id?._id || assignment.glass_item_id;
+    return assignmentGlassId?.toString() === glassItemId?.toString();
+  })
+  .map(assignment => {
+    const glassItem = findGlassItem(order, glassItemId); // reuse existing util
+
+    return {
+      ...assignment,
+      glass_name: glassItem?.glass_name || assignment.glass_name,
+      neck_size: glassItem?.neck_size || assignment.neck_size,
+      weight: glassItem?.weight || assignment.weight
+    };
+  });
+
 
     if (relevantAssignments.length === 0) {
       console.log(`❌ No ${teamName} assignments found for glass ${glassItemId} in item ${item.name}`);
