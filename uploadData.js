@@ -1,23 +1,20 @@
-// // uploadData.js (located at root)
+// uploadData.js (located at root)
 
-// import './config/db.js'; // Connect to MongoDB
-// import custdata from './data/custdata.js';
-// import CustomerData from './models/CustomerData.js'; 
+import './config/db.js'; // Connect to MongoDB
+import pumpdata from './data/pumpdata.js';
+import PumpData from './models/PumpData.js';
 
 
-// const uploadData = async () => {
-//   try {
- 
+const uploadData = async () => {
+    try {
+        await PumpData.insertMany(pumpdata);
+        console.log('✅ Data uploaded successfully');
 
-//     // Insert new data
-//     await CustomerData.insertMany(custdata);
-//     console.log('✅ Data uploaded successfully');
+        process.exit(); // Exit script
+    } catch (error) {
+        console.error('❌ Upload failed:', error);
+        process.exit(1);
+    }
+};
 
-//     process.exit(); // Exit script
-//   } catch (error) {
-//     console.error('❌ Upload failed:', error);
-//     process.exit(1);
-//   }
-// };
-
-// uploadData();
+uploadData();
