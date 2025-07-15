@@ -33,6 +33,7 @@ const teamMembers = {
   caps: new Set(),
   boxes: new Set(),
   pumps: new Set(),
+  accessories: new Set(),
   printing: new Set(),
   coating: new Set(),
   foiling: new Set(),
@@ -114,7 +115,7 @@ io.on('connection', (socket) => {
       orderData: order
     });
 
-    const normalTeams = ['glass', 'caps', 'boxes', 'pumps'];
+    const normalTeams = ['glass', 'caps', 'boxes', 'pumps','accessories'];
     assignedTeams.forEach(teamName => {
       if (normalTeams.includes(teamName) && teamMembers[teamName]?.size > 0) {
         const teamOrder = getTeamOrder(order, teamName);
@@ -324,7 +325,7 @@ io.on('connection', (socket) => {
     const teamLists = {};
     const allTeamMembers = [];
 
-    ['glass', 'caps', 'boxes', 'pumps', 'printing', 'coating', 'foiling', 'frosting'].forEach(teamName => {
+    ['glass', 'caps', 'boxes', 'pumps', 'accessories' , 'printing', 'coating', 'foiling', 'frosting'].forEach(teamName => {
       const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
         const user = connectedUsers.get(socketId);
         return {

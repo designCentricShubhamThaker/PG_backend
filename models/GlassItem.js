@@ -9,6 +9,7 @@ const GlassItemSchema = new mongoose.Schema({
   weight: String,
   neck_size: String,
   decoration: String,
+   rate: { type: Number, default: 0 },
   decoration_no: String,
   decoration_details: {
     type: { type: String },

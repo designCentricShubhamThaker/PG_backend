@@ -1,13 +1,13 @@
 // uploadData.js (located at root)
 
 import './config/db.js'; // Connect to MongoDB
-import pumpdata from './data/pumpdata.js';
-import PumpData from './models/PumpData.js';
+import accessoriesdata from './data/accessoriesdata.js';
+import AccessoryData from './models/AccessoriesData.js';
 
 
 const uploadData = async () => {
     try {
-        await PumpData.insertMany(pumpdata);
+        await AccessoryData.insertMany(accessoriesdata);
         console.log('✅ Data uploaded successfully');
 
         process.exit(); // Exit script

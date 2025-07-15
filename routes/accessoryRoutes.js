@@ -1,21 +1,15 @@
 import express from 'express';
 import {
-  getAllAccessories,
-
-  createAccessory,
-  updateAccessory,
-  deleteAccessory
+  getAllAccessoriesItems,
+ 
+  updateAccessoriesTracking
 } from '../controllers/AccessoryController.js';
 
 const router = express.Router();
 
 router.route('/')
-  .get(getAllAccessories)
-  .post(createAccessory);
+  .get(getAllAccessoriesItems)
+  .patch(updateAccessoriesTracking)
 
-router.route('/:id')
-
-  .put(updateAccessory)
-  .delete(deleteAccessory);
 
 export default router;

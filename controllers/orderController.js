@@ -4,6 +4,7 @@ import GlassItem from '../models/GlassItem.js';
 import CapItem from '../models/CapItem.js';
 import BoxItem from '../models/BoxItem.js';
 import PumpItem from '../models/PumpItem.js';
+import AccessoriesItem from '../models/AccessoriesItem.js';
 import mongoose from 'mongoose';
 import CoatingItem from '../models/CoatingItem.js';
 import PrintingItem from '../models/PrintingItem.js';
@@ -35,6 +36,7 @@ export const getAllOrders = async (req, res, next) => {
           { path: 'team_assignments.caps' },
           { path: 'team_assignments.boxes' },
           { path: 'team_assignments.pumps' },
+          { path: 'team_assignments.accessories' },
           // ✅ FIXED: Properly populate decoration teams with glass_item_id
           {
             path: 'team_assignments.coating',
@@ -68,6 +70,7 @@ export const getAllOrders = async (req, res, next) => {
 export const createOrder = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
+  let transactionCommitted = false;
 
   try {
     const {
@@ -112,24 +115,26 @@ export const createOrder = async (req, res, next) => {
           caps: [],
           boxes: [],
           pumps: [],
+          accessories: [],
           coating: [],
           printing: [],
           foiling: [],
           frosting: []
-
         }
       });
 
       await orderItem.save({ session });
       itemIds.push(orderItem._id);
 
-      if (item.glass && item.glass.length > 0) {
+      // Glass
+      if (item.glass?.length > 0) {
         for (const glassData of item.glass) {
           const glassItem = new GlassItem({
             itemId: orderItem._id,
             orderNumber: order_number,
             glass_name: glassData.glass_name,
             quantity: glassData.quantity,
+            rate: glassData.rate,
             weight: glassData.weight,
             neck_size: glassData.neck_size,
             decoration: glassData.decoration,
@@ -146,10 +151,8 @@ export const createOrder = async (req, res, next) => {
 
           await glassItem.save({ session });
 
-          // ✅ FIXED: Check decoration string directly for process inclusion
           const decorationKey = glassData.decoration || '';
 
-          // Create decoration items based on the decoration key
           if (decorationKey.includes('coating')) {
             const coatingItem = await CoatingItem.create([{
               glass_item_id: glassItem._id,
@@ -213,11 +216,13 @@ export const createOrder = async (req, res, next) => {
             }], { session });
             orderItem.team_assignments.frosting.push(frostingItem[0]._id);
           }
+
           orderItem.team_assignments.glass.push(glassItem._id);
         }
       }
 
-      if (item.caps && item.caps.length > 0) {
+      // Caps
+      if (item.caps?.length > 0) {
         for (const capData of item.caps) {
           const capItem = new CapItem({
             itemId: orderItem._id,
@@ -225,6 +230,7 @@ export const createOrder = async (req, res, next) => {
             cap_name: capData.cap_name,
             neck_size: capData.neck_size,
             quantity: capData.quantity,
+            rate: capData.rate,
             process: capData.process,
             material: capData.material,
             team: capData.team || 'Caps',
@@ -241,13 +247,15 @@ export const createOrder = async (req, res, next) => {
         }
       }
 
-      if (item.boxes && item.boxes.length > 0) {
+      // Boxes
+      if (item.boxes?.length > 0) {
         for (const boxData of item.boxes) {
           const boxItem = new BoxItem({
             itemId: orderItem._id,
             orderNumber: order_number,
             box_name: boxData.box_name,
             quantity: boxData.quantity,
+            rate: boxData.rate,
             approval_code: boxData.approval_code,
             team: boxData.team || 'Boxes',
             status: 'Pending',
@@ -263,7 +271,7 @@ export const createOrder = async (req, res, next) => {
         }
       }
 
-      if (item.pumps && item.pumps.length > 0) {
+      if (item.pumps?.length > 0) {
         for (const pumpData of item.pumps) {
           const pumpItem = new PumpItem({
             itemId: orderItem._id,
@@ -271,6 +279,7 @@ export const createOrder = async (req, res, next) => {
             pump_name: pumpData.pump_name,
             neck_type: pumpData.neck_type,
             quantity: pumpData.quantity,
+            rate: pumpData.rate,
             team: pumpData.team || 'Pumps',
             status: 'Pending',
             team_tracking: {
@@ -285,6 +294,31 @@ export const createOrder = async (req, res, next) => {
         }
       }
 
+      // Accessories
+      if (item.accessories?.length > 0) {
+        for (const accessoryData of item.accessories) {
+          const accessoryItem = new AccessoriesItem({
+            itemId: orderItem._id,
+            orderNumber: order_number,
+            accessories_name: accessoryData.accessories_name,
+            rate: accessoryData.rate,
+            quantity: accessoryData.quantity,
+            accessory_type: accessoryData.accessory_type,
+            material: accessoryData.material,
+            team: accessoryData.team || 'Accessories',
+            status: 'Pending',
+            team_tracking: {
+              total_completed_qty: 0,
+              completed_entries: [],
+              status: 'Pending'
+            }
+          });
+
+          await accessoryItem.save({ session });
+          orderItem.team_assignments.accessories.push(accessoryItem._id);
+        }
+      }
+
       await orderItem.save({ session });
     }
 
@@ -292,47 +326,46 @@ export const createOrder = async (req, res, next) => {
     await newOrder.save({ session });
 
     await session.commitTransaction();
+    transactionCommitted = true;
     session.endSession();
 
-    const populatedOrder = await Order.findById(newOrder._id)
-      .populate({
-        path: 'item_ids',
-        populate: [
-          { path: 'team_assignments.glass' },
-          { path: 'team_assignments.caps' },
-          { path: 'team_assignments.boxes' },
-          { path: 'team_assignments.pumps' },
-
-          // 🔁 These are the ones missing deep population:
-          {
-            path: 'team_assignments.coating',
-            populate: { path: 'glass_item_id' }, // ✅ so glass data appears
-          },
-          {
-            path: 'team_assignments.printing',
-            populate: { path: 'glass_item_id' },
-          },
-          {
-            path: 'team_assignments.foiling',
-            populate: { path: 'glass_item_id' },
-          },
-          {
-            path: 'team_assignments.frosting',
-            populate: { path: 'glass_item_id' },
-          }
-        ]
-      });
-
-
-
+    const populatedOrder = await Order.findById(newOrder._id).populate({
+      path: 'item_ids',
+      populate: [
+        { path: 'team_assignments.glass' },
+        { path: 'team_assignments.caps' },
+        { path: 'team_assignments.boxes' },
+        { path: 'team_assignments.pumps' },
+        { path: 'team_assignments.accessories' },
+        {
+          path: 'team_assignments.coating',
+          populate: { path: 'glass_item_id' }
+        },
+        {
+          path: 'team_assignments.printing',
+          populate: { path: 'glass_item_id' }
+        },
+        {
+          path: 'team_assignments.foiling',
+          populate: { path: 'glass_item_id' }
+        },
+        {
+          path: 'team_assignments.frosting',
+          populate: { path: 'glass_item_id' }
+        }
+      ]
+    });
 
     res.status(201).json({
       success: true,
       message: 'Order created successfully',
       data: populatedOrder
     });
+
   } catch (error) {
-    await session.abortTransaction();
+    if (!transactionCommitted) {
+      await session.abortTransaction();
+    }
     session.endSession();
 
     if (error.code === 11000) {
@@ -345,6 +378,7 @@ export const createOrder = async (req, res, next) => {
     next(error);
   }
 };
+
 
 export const createOrderItem = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -366,6 +400,7 @@ export const createOrderItem = async (req, res, next) => {
         caps: [],
         boxes: [],
         pumps: [],
+        accessories: [],
         // ✅ FIXED: Include decoration teams
         coating: [],
         printing: [],
@@ -389,6 +424,7 @@ export const createOrderItem = async (req, res, next) => {
         { path: 'team_assignments.caps' },
         { path: 'team_assignments.boxes' },
         { path: 'team_assignments.pumps' },
+        { path: 'team_assignments.accessories' },
         {
           path: 'team_assignments.coating',
           populate: { path: 'glass_item_id' }
@@ -421,7 +457,7 @@ export const getOrderById = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories',
         },
       });
 
@@ -446,7 +482,7 @@ export const getOrderByNumber = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories',
         },
       });
 
@@ -465,7 +501,8 @@ export const getOrderByNumber = async (req, res, next) => {
         glass: item.team_assignments.glass || [],
         caps: item.team_assignments.caps || [],
         boxes: item.team_assignments.boxes || [],
-        pumps: item.team_assignments.pumps || []
+        pumps: item.team_assignments.pumps || [],
+        accessories: item.team_assignments.accessories || []
       }))
     };
 
@@ -497,7 +534,7 @@ export const updateOrder = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories',
         },
       });
 
@@ -532,10 +569,11 @@ export const updateOrder = async (req, res, next) => {
           glass: {},
           caps: {},
           boxes: {},
-          pumps: {}
+          pumps: {},
+          accessories: {}
         });
 
-        ['glass', 'caps', 'boxes', 'pumps'].forEach(teamType => {
+        ['glass', 'caps', 'boxes', 'pumps', 'accessories'].forEach(teamType => {
           if (item.team_assignments?.[teamType]) {
             item.team_assignments[teamType].forEach(assignment => {
               const assignmentKey = getAssignmentKey(assignment, teamType);
@@ -559,6 +597,8 @@ export const updateOrder = async (req, res, next) => {
           return `${assignment.box_name}_${assignment.approval_code}`;
         case 'pumps':
           return `${assignment.pump_name}_${assignment.neck_type}`;
+        case 'accessories':
+          return `${assignment.accessories_name}_${assignment.accessory_type}_${assignment.material}`;
         default:
           return assignment.name || 'default';
       }
@@ -578,6 +618,7 @@ export const updateOrder = async (req, res, next) => {
       await CapItem.deleteMany({ itemId: item._id }, { session });
       await BoxItem.deleteMany({ itemId: item._id }, { session });
       await PumpItem.deleteMany({ itemId: item._id }, { session });
+      await AccessoriesItem.deleteMany({ itemId: item._id }, { session });
       await item.deleteOne({ session });
     }
 
@@ -595,7 +636,8 @@ export const updateOrder = async (req, res, next) => {
           glass: [],
           caps: [],
           boxes: [],
-          pumps: []
+          pumps: [],
+          accessories: []
         }
       });
 
@@ -603,7 +645,7 @@ export const updateOrder = async (req, res, next) => {
       itemIds.push(orderItem._id);
 
       const existingItemTracking = existingTrackingData.get(item.name) || {
-        glass: {}, caps: {}, boxes: {}, pumps: {}
+        glass: {}, caps: {}, boxes: {}, pumps: {}, accessories: {}
       };
 
       // Handle Glass Items with preserved tracking
@@ -618,6 +660,7 @@ export const updateOrder = async (req, res, next) => {
             glass_name: glassData.glass_name,
             quantity: glassData.quantity,
             weight: glassData.weight,
+            rate: glassData.rate,
             neck_size: glassData.neck_size,
             decoration: glassData.decoration,
             decoration_no: glassData.decoration_no,
@@ -648,6 +691,7 @@ export const updateOrder = async (req, res, next) => {
             cap_name: capData.cap_name,
             neck_size: capData.neck_size,
             quantity: capData.quantity,
+            rate: capData.rate,
             process: capData.process,
             material: capData.material,
             team: capData.team || 'Cap Manufacturing - Delhi',
@@ -675,6 +719,7 @@ export const updateOrder = async (req, res, next) => {
             orderNumber: existingOrder.order_number, // Use NEW order number
             box_name: boxData.box_name,
             quantity: boxData.quantity,
+            rate: boxData.rate,
             approval_code: boxData.approval_code,
             team: boxData.team || 'Box Manufacturing - Pune',
             status: existingTracking?.status || boxData.status || 'Pending',
@@ -702,6 +747,7 @@ export const updateOrder = async (req, res, next) => {
             pump_name: pumpData.pump_name,
             neck_type: pumpData.neck_type,
             quantity: pumpData.quantity,
+            rate: pumpData.rate,
             team: pumpData.team || 'Pump Manufacturing - Chennai',
             status: existingTracking?.status || pumpData.status || 'Pending',
             team_tracking: existingTracking?.team_tracking || pumpData.team_tracking || {
@@ -713,6 +759,34 @@ export const updateOrder = async (req, res, next) => {
 
           await pumpItem.save({ session });
           orderItem.team_assignments.pumps.push(pumpItem._id);
+        }
+      }
+
+      // Handle Accessories Items with preserved tracking
+      if (item.accessories && item.accessories.length > 0) {
+        for (const accessoryData of item.accessories) {
+          const assignmentKey = getAssignmentKey(accessoryData, 'accessories');
+          const existingTracking = existingItemTracking.accessories[assignmentKey];
+
+          const accessoryItem = new AccessoriesItem({
+            itemId: orderItem._id,
+            orderNumber: existingOrder.order_number, // Use NEW order number
+            accessories_name: accessoryData.accessories_name,
+            quantity: accessoryData.quantity,
+            rate: accessoryData.rate,
+            accessory_type: accessoryData.accessory_type,
+            material: accessoryData.material,
+            team: accessoryData.team || 'Accessories Manufacturing - Bangalore',
+            status: existingTracking?.status || accessoryData.status || 'Pending',
+            team_tracking: existingTracking?.team_tracking || accessoryData.team_tracking || {
+              total_completed_qty: 0,
+              completed_entries: [],
+              status: 'Pending'
+            }
+          });
+
+          await accessoryItem.save({ session });
+          orderItem.team_assignments.accessories.push(accessoryItem._id);
         }
       }
 
@@ -731,7 +805,7 @@ export const updateOrder = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories',
         },
       });
 
@@ -772,6 +846,7 @@ export const deleteOrder = async (req, res, next) => {
       await CapItem.deleteMany({ itemId: item._id }, { session });
       await BoxItem.deleteMany({ itemId: item._id }, { session });
       await PumpItem.deleteMany({ itemId: item._id }, { session });
+      await AccessoriesItem.deleteMany({ itemId: item._id }, { session });
       await PrintingItem.deleteMany({ itemId: item._id }, { session });
       await CoatingItem.deleteMany({ itemId: item._id }, { session });
       await FoilingItem.deleteMany({ itemId: item._id }, { session });

@@ -7,6 +7,7 @@ const OrderItemSchema = new mongoose.Schema({
     glass: [{ type: mongoose.Schema.Types.ObjectId, ref: 'GlassItem' }],
     caps: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CapItem' }],
     boxes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'BoxItem' }],
+    accessories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AccessoriesItem' }],
     pumps: [{ type: mongoose.Schema.Types.ObjectId, ref: 'PumpItem' }],
     coating: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CoatingItem' }],
     printing: [{ type: mongoose.Schema.Types.ObjectId, ref: 'PrintingItem' }],

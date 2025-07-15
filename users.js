@@ -21,10 +21,16 @@ export const users = [
     team: "glass"
   },
   {
+    user: "accessories_team",
+    password: "pg@accessories",
+    role: "user",
+    team: "accessories"
+  },
+  {
     user: "cap_team",
     password: "pg@cap",
     role: "user",
-    team:"cap"
+    team:"caps"
   },
   {
     user: 'deco_print',
