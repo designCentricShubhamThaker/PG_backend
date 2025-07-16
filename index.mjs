@@ -159,22 +159,17 @@ io.on('connection', (socket) => {
       message: `${team.toUpperCase()} team updated progress for order #${orderNumber}`
     };
 
-    // Send to dispatchers
     io.to('dispatchers').emit('team-progress-updated', {
       ...notificationData,
       orderData: processedOrder
     });
 
-    // Broadcast to other teams
     socket.broadcast.emit('team-progress-updated', notificationData);
 
-    // If glass team completed, check decoration sequences
     if (team.toLowerCase() === 'glass') {
       console.log('🔍 Glass team completed - checking decoration sequences');
       checkDecorationSequences(processedOrder, orderNumber, customerName, dispatcherName);
     }
-
-    // If decoration team completed, check next in sequence
     if (['printing', 'coating', 'foiling', 'frosting'].includes(team.toLowerCase())) {
       console.log(`🔍 ${team} team completed - checking next decoration team`);
       checkNextDecorationTeam(processedOrder, orderNumber, customerName, dispatcherName, team.toLowerCase(), targetGlassItem);

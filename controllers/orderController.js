@@ -839,6 +839,7 @@ export const deleteOrder = async (req, res, next) => {
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
+
     const orderItems = await OrderItem.find({ order_number: order.order_number });
 
     for (const item of orderItems) {
@@ -850,14 +851,19 @@ export const deleteOrder = async (req, res, next) => {
       await PrintingItem.deleteMany({ itemId: item._id }, { session });
       await CoatingItem.deleteMany({ itemId: item._id }, { session });
       await FoilingItem.deleteMany({ itemId: item._id }, { session });
-      await FrostingItem.deleteMany({ itemId: item._id }, { session }); // ✅ FIXED
+      await FrostingItem.deleteMany({ itemId: item._id }, { session });
     }
 
+    // ✅ Delete all associated OrderItems
+    await OrderItem.deleteMany({ order_number: order.order_number }, { session });
+
+    // ✅ Delete the main Order
     await order.deleteOne({ session });
+
     await session.commitTransaction();
     session.endSession();
 
-    res.status(200).json({ success: true, message: 'Order deleted successfully' });
+    res.status(200).json({ success: true, message: 'Order and all associated data deleted successfully' });
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
