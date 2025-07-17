@@ -291,9 +291,9 @@ io.on('connection', (socket) => {
 
 
   function addUserToTeams(socket, userInfo) {
-    const { role, team } = userInfo;
+    const { role, team   } = userInfo;
 
-    if (role === 'admin' || role === 'dispatcher') {
+    if (role === 'admin' || role === 'dispatcher' || team === "marketing" ) {
       teamMembers.dispatchers.add(socket.id);
       socket.join('dispatchers');
     }
