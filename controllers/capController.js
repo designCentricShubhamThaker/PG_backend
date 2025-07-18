@@ -28,12 +28,10 @@ const calculateCompletionStatus = (assignment) => {
     return metalCompleted >= assignment.quantity ? 'Completed' : 'Pending';
   }
 };
-
-// Get cap orders by type
 export const getCapOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
-    
+
     let matchCondition = {};
     if (orderType === 'pending') {
       matchCondition.order_status = { $ne: 'Completed' };
@@ -44,7 +42,6 @@ export const getCapOrders = async (req, res, next) => {
     const orders = await Order.find(matchCondition)
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.caps': { $exists: true, $ne: [] } },
         populate: {
           path: 'team_assignments.caps',
           model: 'CapItem'
@@ -53,9 +50,9 @@ export const getCapOrders = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Filter out orders that don't have cap assignments
-    const filteredOrders = orders.filter(order => 
-      order.item_ids && order.item_ids.length > 0
+    // Filter only orders with at least one cap assignment
+    const filteredOrders = orders.filter(order =>
+      order.item_ids?.some(item => item.team_assignments?.caps?.length > 0)
     );
 
     res.status(200).json({ success: true, data: filteredOrders });

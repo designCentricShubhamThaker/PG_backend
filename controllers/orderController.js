@@ -379,7 +379,6 @@ export const createOrder = async (req, res, next) => {
   }
 };
 
-
 export const createOrderItem = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -451,6 +450,433 @@ export const createOrderItem = async (req, res, next) => {
   }
 };
 
+export const updateOrder = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      order_number,
+      dispatcher_name,
+      customer_name,
+      order_status,
+      items = []
+    } = req.body;
+
+    // Find the existing order with populated data
+    const existingOrder = await Order.findById(req.params.id)
+      .populate({
+        path: 'item_ids',
+        populate: {
+          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories team_assignments.coating team_assignments.printing team_assignments.foiling team_assignments.frosting',
+        },
+      });
+
+    if (!existingOrder) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // Store the OLD order number before updating
+    const oldOrderNumber = existingOrder.order_number;
+
+    // Check if new order number conflicts with other orders
+    if (order_number && order_number !== oldOrderNumber) {
+      const orderExists = await Order.findOne({
+        order_number,
+        _id: { $ne: req.params.id }
+      });
+      if (orderExists) {
+        return res.status(400).json({
+          success: false,
+          message: `Order with number ${order_number} already exists`
+        });
+      }
+    }
+
+    // Preserve existing tracking data for ALL teams including decoration teams
+    const existingTrackingData = new Map();
+
+    if (existingOrder.item_ids) {
+      existingOrder.item_ids.forEach(item => {
+        const itemKey = item.name;
+        existingTrackingData.set(itemKey, {
+          glass: {},
+          caps: {},
+          boxes: {},
+          pumps: {},
+          accessories: {},
+          coating: {},
+          printing: {},
+          foiling: {},
+          frosting: {}
+        });
+
+        ['glass', 'caps', 'boxes', 'pumps', 'accessories', 'coating', 'printing', 'foiling', 'frosting'].forEach(teamType => {
+          if (item.team_assignments?.[teamType]) {
+            item.team_assignments[teamType].forEach(assignment => {
+              const assignmentKey = getAssignmentKey(assignment, teamType);
+              existingTrackingData.get(itemKey)[teamType][assignmentKey] = {
+                team_tracking: assignment.team_tracking,
+                status: assignment.status
+              };
+            });
+          }
+        });
+      });
+    }
+
+    function getAssignmentKey(assignment, teamType) {
+      switch (teamType) {
+        case 'glass':
+          return `${assignment.glass_name}_${assignment.neck_size}_${assignment.decoration}`;
+        case 'caps':
+          return `${assignment.cap_name}_${assignment.neck_size}_${assignment.material}`;
+        case 'boxes':
+          return `${assignment.box_name}_${assignment.approval_code}`;
+        case 'pumps':
+          return `${assignment.pump_name}_${assignment.neck_type}`;
+        case 'accessories':
+          return `${assignment.accessories_name}_${assignment.accessory_type}_${assignment.material}`;
+        case 'coating':
+        case 'printing':
+        case 'foiling':
+        case 'frosting':
+          // For decoration teams, use glass_item_id as the key
+          return assignment.glass_item_id?._id || assignment.glass_item_id || 'default';
+        default:
+          return assignment.name || 'default';
+      }
+    }
+
+    // Update order basic info
+    existingOrder.order_number = order_number || existingOrder.order_number;
+    existingOrder.dispatcher_name = dispatcher_name || existingOrder.dispatcher_name;
+    existingOrder.customer_name = customer_name || existingOrder.customer_name;
+    existingOrder.order_status = order_status || existingOrder.order_status;
+
+    // Delete existing OrderItems and ALL associated items (including decoration items)
+    const existingOrderItems = await OrderItem.find({ order_number: oldOrderNumber });
+
+    for (const item of existingOrderItems) {
+      // Delete all team assignments
+      await GlassItem.deleteMany({ itemId: item._id }, { session });
+      await CapItem.deleteMany({ itemId: item._id }, { session });
+      await BoxItem.deleteMany({ itemId: item._id }, { session });
+      await PumpItem.deleteMany({ itemId: item._id }, { session });
+      await AccessoriesItem.deleteMany({ itemId: item._id }, { session });
+      // ✅ FIX: Delete decoration items too
+      await CoatingItem.deleteMany({ itemId: item._id }, { session });
+      await PrintingItem.deleteMany({ itemId: item._id }, { session });
+      await FoilingItem.deleteMany({ itemId: item._id }, { session });
+      await FrostingItem.deleteMany({ itemId: item._id }, { session });
+
+      await item.deleteOne({ session });
+    }
+
+    // Clear the item_ids array
+    existingOrder.item_ids = [];
+
+    // Create new order items with NEW order number and preserved tracking data
+    const itemIds = [];
+
+    for (const item of items) {
+      const orderItem = new OrderItem({
+        order_number: existingOrder.order_number, // Use the NEW order number
+        name: item.name || `Item for ${existingOrder.order_number}`,
+        team_assignments: {
+          glass: [],
+          caps: [],
+          boxes: [],
+          pumps: [],
+          accessories: [],
+          // ✅ FIX: Include decoration teams in team_assignments
+          coating: [],
+          printing: [],
+          foiling: [],
+          frosting: []
+        }
+      });
+
+      await orderItem.save({ session });
+      itemIds.push(orderItem._id);
+
+      const existingItemTracking = existingTrackingData.get(item.name) || {
+        glass: {}, caps: {}, boxes: {}, pumps: {}, accessories: {}, coating: {}, printing: {}, foiling: {}, frosting: {}
+      };
+
+      // Handle Glass Items with preserved tracking
+      if (item.glass && item.glass.length > 0) {
+        for (const glassData of item.glass) {
+          const assignmentKey = getAssignmentKey(glassData, 'glass');
+          const existingTracking = existingItemTracking.glass[assignmentKey];
+
+          const glassItem = new GlassItem({
+            itemId: orderItem._id,
+            orderNumber: existingOrder.order_number,
+            glass_name: glassData.glass_name,
+            quantity: glassData.quantity,
+            weight: glassData.weight,
+            rate: glassData.rate,
+            neck_size: glassData.neck_size,
+            decoration: glassData.decoration,
+            decoration_no: glassData.decoration_no,
+            decoration_details: glassData.decoration_details,
+            team: glassData.team || 'Glass',
+            status: existingTracking?.status || glassData.status || 'Pending',
+            team_tracking: existingTracking?.team_tracking || glassData.team_tracking || {
+              total_completed_qty: 0,
+              completed_entries: [],
+              status: 'Pending'
+            }
+          });
+
+          await glassItem.save({ session });
+
+          // ✅ FIX: Recreate decoration items with preserved tracking data
+          const decorationKey = glassData.decoration || '';
+
+          if (decorationKey.includes('coating')) {
+            const existingCoatingTracking = existingItemTracking.coating[glassItem._id];
+            const coatingItem = await CoatingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: existingOrder.order_number,
+              quantity: glassItem.quantity,
+              status: existingCoatingTracking?.status || "Pending",
+              team_tracking: existingCoatingTracking?.team_tracking || {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.coating.push(coatingItem[0]._id);
+          }
+
+          if (decorationKey.includes('printing')) {
+            const existingPrintingTracking = existingItemTracking.printing[glassItem._id];
+            const printingItem = await PrintingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: existingOrder.order_number,
+              quantity: glassItem.quantity,
+              status: existingPrintingTracking?.status || "Pending",
+              team_tracking: existingPrintingTracking?.team_tracking || {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.printing.push(printingItem[0]._id);
+          }
+
+          if (decorationKey.includes('foiling')) {
+            const existingFoilingTracking = existingItemTracking.foiling[glassItem._id];
+            const foilingItem = await FoilingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: existingOrder.order_number,
+              quantity: glassItem.quantity,
+              status: existingFoilingTracking?.status || "Pending",
+              team_tracking: existingFoilingTracking?.team_tracking || {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.foiling.push(foilingItem[0]._id);
+          }
+
+          if (decorationKey.includes('frosting')) {
+            const existingFrostingTracking = existingItemTracking.frosting[glassItem._id];
+            const frostingItem = await FrostingItem.create([{
+              glass_item_id: glassItem._id,
+              itemId: orderItem._id,
+              orderNumber: existingOrder.order_number,
+              quantity: glassItem.quantity,
+              status: existingFrostingTracking?.status || "Pending",
+              team_tracking: existingFrostingTracking?.team_tracking || {
+                total_completed_qty: 0,
+                completed_entries: [],
+                status: "Pending"
+              }
+            }], { session });
+            orderItem.team_assignments.frosting.push(frostingItem[0]._id);
+          }
+
+          orderItem.team_assignments.glass.push(glassItem._id);
+        }
+      }
+
+      // Handle Cap Items with preserved tracking
+      if (item.caps && item.caps.length > 0) {
+        for (const capData of item.caps) {
+          const assignmentKey = getAssignmentKey(capData, 'caps');
+          const existingTracking = existingItemTracking.caps[assignmentKey];
+
+          const capItem = new CapItem({
+            itemId: orderItem._id,
+            orderNumber: existingOrder.order_number,
+            cap_name: capData.cap_name,
+            neck_size: capData.neck_size,
+            quantity: capData.quantity,
+            rate: capData.rate,
+            process: capData.process,
+            material: capData.material,
+            team: capData.team || 'Caps',
+            status: existingTracking?.status || capData.status || 'Pending',
+            team_tracking: existingTracking?.team_tracking || capData.team_tracking || {
+              total_completed_qty: 0,
+              completed_entries: [],
+              status: 'Pending'
+            }
+          });
+
+          await capItem.save({ session });
+          orderItem.team_assignments.caps.push(capItem._id);
+        }
+      }
+
+      // Handle Box Items with preserved tracking
+      if (item.boxes && item.boxes.length > 0) {
+        for (const boxData of item.boxes) {
+          const assignmentKey = getAssignmentKey(boxData, 'boxes');
+          const existingTracking = existingItemTracking.boxes[assignmentKey];
+
+          const boxItem = new BoxItem({
+            itemId: orderItem._id,
+            orderNumber: existingOrder.order_number,
+            box_name: boxData.box_name,
+            quantity: boxData.quantity,
+            rate: boxData.rate,
+            approval_code: boxData.approval_code,
+            team: boxData.team || 'Boxes',
+            status: existingTracking?.status || boxData.status || 'Pending',
+            team_tracking: existingTracking?.team_tracking || boxData.team_tracking || {
+              total_completed_qty: 0,
+              completed_entries: [],
+              status: 'Pending'
+            }
+          });
+
+          await boxItem.save({ session });
+          orderItem.team_assignments.boxes.push(boxItem._id);
+        }
+      }
+
+      // Handle Pump Items with preserved tracking
+      if (item.pumps && item.pumps.length > 0) {
+        for (const pumpData of item.pumps) {
+          const assignmentKey = getAssignmentKey(pumpData, 'pumps');
+          const existingTracking = existingItemTracking.pumps[assignmentKey];
+
+          const pumpItem = new PumpItem({
+            itemId: orderItem._id,
+            orderNumber: existingOrder.order_number,
+            pump_name: pumpData.pump_name,
+            neck_type: pumpData.neck_type,
+            quantity: pumpData.quantity,
+            rate: pumpData.rate,
+            team: pumpData.team || 'Pumps',
+            status: existingTracking?.status || pumpData.status || 'Pending',
+            team_tracking: existingTracking?.team_tracking || pumpData.team_tracking || {
+              total_completed_qty: 0,
+              completed_entries: [],
+              status: 'Pending'
+            }
+          });
+
+          await pumpItem.save({ session });
+          orderItem.team_assignments.pumps.push(pumpItem._id);
+        }
+      }
+
+      // Handle Accessories Items with preserved tracking
+      if (item.accessories && item.accessories.length > 0) {
+        for (const accessoryData of item.accessories) {
+          const assignmentKey = getAssignmentKey(accessoryData, 'accessories');
+          const existingTracking = existingItemTracking.accessories[assignmentKey];
+
+          const accessoryItem = new AccessoriesItem({
+            itemId: orderItem._id,
+            orderNumber: existingOrder.order_number,
+            accessories_name: accessoryData.accessories_name,
+            quantity: accessoryData.quantity,
+            rate: accessoryData.rate,
+            accessory_type: accessoryData.accessory_type,
+            material: accessoryData.material,
+            team: accessoryData.team || 'Accessories',
+            status: existingTracking?.status || accessoryData.status || 'Pending',
+            team_tracking: existingTracking?.team_tracking || accessoryData.team_tracking || {
+              total_completed_qty: 0,
+              completed_entries: [],
+              status: 'Pending'
+            }
+          });
+
+          await accessoryItem.save({ session });
+          orderItem.team_assignments.accessories.push(accessoryItem._id);
+        }
+      }
+
+      await orderItem.save({ session });
+    }
+
+    // Update the order with new item IDs
+    existingOrder.item_ids = itemIds;
+    await existingOrder.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // ✅ FIX: Fetch the fully populated updated order with ALL team assignments
+    const populatedOrder = await Order.findById(existingOrder._id)
+      .populate({
+        path: 'item_ids',
+        populate: [
+          { path: 'team_assignments.glass' },
+          { path: 'team_assignments.caps' },
+          { path: 'team_assignments.boxes' },
+          { path: 'team_assignments.pumps' },
+          { path: 'team_assignments.accessories' },
+          {
+            path: 'team_assignments.coating',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.printing',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.foiling',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.frosting',
+            populate: { path: 'glass_item_id' }
+          }
+        ]
+      });
+
+    res.status(200).json({
+      success: true,
+      message: 'Order updated successfully',
+      data: populatedOrder
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate key error. Order number must be unique.'
+      });
+    }
+
+    next(error);
+  }
+};
+
 export const getOrderById = async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id)
@@ -516,318 +942,6 @@ export const getOrderByNumber = async (req, res, next) => {
   }
 };
 
-export const updateOrder = async (req, res, next) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const {
-      order_number,
-      dispatcher_name,
-      customer_name,
-      order_status,
-      items = []
-    } = req.body;
-
-    // Find the existing order with populated data
-    const existingOrder = await Order.findById(req.params.id)
-      .populate({
-        path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories',
-        },
-      });
-
-    if (!existingOrder) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    // Store the OLD order number before updating
-    const oldOrderNumber = existingOrder.order_number;
-
-    // Check if new order number conflicts with other orders
-    if (order_number && order_number !== oldOrderNumber) {
-      const orderExists = await Order.findOne({
-        order_number,
-        _id: { $ne: req.params.id }
-      });
-      if (orderExists) {
-        return res.status(400).json({
-          success: false,
-          message: `Order with number ${order_number} already exists`
-        });
-      }
-    }
-
-    // Preserve existing tracking data
-    const existingTrackingData = new Map();
-
-    if (existingOrder.item_ids) {
-      existingOrder.item_ids.forEach(item => {
-        const itemKey = item.name;
-        existingTrackingData.set(itemKey, {
-          glass: {},
-          caps: {},
-          boxes: {},
-          pumps: {},
-          accessories: {}
-        });
-
-        ['glass', 'caps', 'boxes', 'pumps', 'accessories'].forEach(teamType => {
-          if (item.team_assignments?.[teamType]) {
-            item.team_assignments[teamType].forEach(assignment => {
-              const assignmentKey = getAssignmentKey(assignment, teamType);
-              existingTrackingData.get(itemKey)[teamType][assignmentKey] = {
-                team_tracking: assignment.team_tracking,
-                status: assignment.status
-              };
-            });
-          }
-        });
-      });
-    }
-
-    function getAssignmentKey(assignment, teamType) {
-      switch (teamType) {
-        case 'glass':
-          return `${assignment.glass_name}_${assignment.neck_size}_${assignment.decoration}`;
-        case 'caps':
-          return `${assignment.cap_name}_${assignment.neck_size}_${assignment.material}`;
-        case 'boxes':
-          return `${assignment.box_name}_${assignment.approval_code}`;
-        case 'pumps':
-          return `${assignment.pump_name}_${assignment.neck_type}`;
-        case 'accessories':
-          return `${assignment.accessories_name}_${assignment.accessory_type}_${assignment.material}`;
-        default:
-          return assignment.name || 'default';
-      }
-    }
-
-    // Update order basic info
-    existingOrder.order_number = order_number || existingOrder.order_number;
-    existingOrder.dispatcher_name = dispatcher_name || existingOrder.dispatcher_name;
-    existingOrder.customer_name = customer_name || existingOrder.customer_name;
-    existingOrder.order_status = order_status || existingOrder.order_status;
-
-    // *** FIX: Delete OrderItems using the OLD order number ***
-    const existingOrderItems = await OrderItem.find({ order_number: oldOrderNumber });
-
-    for (const item of existingOrderItems) {
-      await GlassItem.deleteMany({ itemId: item._id }, { session });
-      await CapItem.deleteMany({ itemId: item._id }, { session });
-      await BoxItem.deleteMany({ itemId: item._id }, { session });
-      await PumpItem.deleteMany({ itemId: item._id }, { session });
-      await AccessoriesItem.deleteMany({ itemId: item._id }, { session });
-      await item.deleteOne({ session });
-    }
-
-    // Clear the item_ids array
-    existingOrder.item_ids = [];
-
-    // Create new order items with NEW order number and preserved tracking data
-    const itemIds = [];
-
-    for (const item of items) {
-      const orderItem = new OrderItem({
-        order_number: existingOrder.order_number, // Use the NEW order number
-        name: item.name || `Item for ${existingOrder.order_number}`,
-        team_assignments: {
-          glass: [],
-          caps: [],
-          boxes: [],
-          pumps: [],
-          accessories: []
-        }
-      });
-
-      await orderItem.save({ session });
-      itemIds.push(orderItem._id);
-
-      const existingItemTracking = existingTrackingData.get(item.name) || {
-        glass: {}, caps: {}, boxes: {}, pumps: {}, accessories: {}
-      };
-
-      // Handle Glass Items with preserved tracking
-      if (item.glass && item.glass.length > 0) {
-        for (const glassData of item.glass) {
-          const assignmentKey = getAssignmentKey(glassData, 'glass');
-          const existingTracking = existingItemTracking.glass[assignmentKey];
-
-          const glassItem = new GlassItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            glass_name: glassData.glass_name,
-            quantity: glassData.quantity,
-            weight: glassData.weight,
-            rate: glassData.rate,
-            neck_size: glassData.neck_size,
-            decoration: glassData.decoration,
-            decoration_no: glassData.decoration_no,
-            decoration_details: glassData.decoration_details,
-            team: glassData.team || 'Glass Manufacturing - Mumbai',
-            status: existingTracking?.status || glassData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || glassData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-
-          await glassItem.save({ session });
-          orderItem.team_assignments.glass.push(glassItem._id);
-        }
-      }
-
-      // Handle Cap Items with preserved tracking
-      if (item.caps && item.caps.length > 0) {
-        for (const capData of item.caps) {
-          const assignmentKey = getAssignmentKey(capData, 'caps');
-          const existingTracking = existingItemTracking.caps[assignmentKey];
-
-          const capItem = new CapItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            cap_name: capData.cap_name,
-            neck_size: capData.neck_size,
-            quantity: capData.quantity,
-            rate: capData.rate,
-            process: capData.process,
-            material: capData.material,
-            team: capData.team || 'Cap Manufacturing - Delhi',
-            status: existingTracking?.status || capData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || capData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-
-          await capItem.save({ session });
-          orderItem.team_assignments.caps.push(capItem._id);
-        }
-      }
-
-      // Handle Box Items with preserved tracking
-      if (item.boxes && item.boxes.length > 0) {
-        for (const boxData of item.boxes) {
-          const assignmentKey = getAssignmentKey(boxData, 'boxes');
-          const existingTracking = existingItemTracking.boxes[assignmentKey];
-
-          const boxItem = new BoxItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            box_name: boxData.box_name,
-            quantity: boxData.quantity,
-            rate: boxData.rate,
-            approval_code: boxData.approval_code,
-            team: boxData.team || 'Box Manufacturing - Pune',
-            status: existingTracking?.status || boxData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || boxData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-
-          await boxItem.save({ session });
-          orderItem.team_assignments.boxes.push(boxItem._id);
-        }
-      }
-
-      // Handle Pump Items with preserved tracking
-      if (item.pumps && item.pumps.length > 0) {
-        for (const pumpData of item.pumps) {
-          const assignmentKey = getAssignmentKey(pumpData, 'pumps');
-          const existingTracking = existingItemTracking.pumps[assignmentKey];
-
-          const pumpItem = new PumpItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            pump_name: pumpData.pump_name,
-            neck_type: pumpData.neck_type,
-            quantity: pumpData.quantity,
-            rate: pumpData.rate,
-            team: pumpData.team || 'Pump Manufacturing - Chennai',
-            status: existingTracking?.status || pumpData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || pumpData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-
-          await pumpItem.save({ session });
-          orderItem.team_assignments.pumps.push(pumpItem._id);
-        }
-      }
-
-      // Handle Accessories Items with preserved tracking
-      if (item.accessories && item.accessories.length > 0) {
-        for (const accessoryData of item.accessories) {
-          const assignmentKey = getAssignmentKey(accessoryData, 'accessories');
-          const existingTracking = existingItemTracking.accessories[assignmentKey];
-
-          const accessoryItem = new AccessoriesItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            accessories_name: accessoryData.accessories_name,
-            quantity: accessoryData.quantity,
-            rate: accessoryData.rate,
-            accessory_type: accessoryData.accessory_type,
-            material: accessoryData.material,
-            team: accessoryData.team || 'Accessories Manufacturing - Bangalore',
-            status: existingTracking?.status || accessoryData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || accessoryData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-
-          await accessoryItem.save({ session });
-          orderItem.team_assignments.accessories.push(accessoryItem._id);
-        }
-      }
-
-      await orderItem.save({ session });
-    }
-
-    // Update the order with new item IDs
-    existingOrder.item_ids = itemIds;
-    await existingOrder.save({ session });
-
-    await session.commitTransaction();
-    session.endSession();
-
-    // Fetch the fully populated updated order
-    const populatedOrder = await Order.findById(existingOrder._id)
-      .populate({
-        path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories',
-        },
-      });
-
-    res.status(200).json({
-      success: true,
-      message: 'Order updated successfully',
-      data: populatedOrder
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-
-    if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        message: 'Duplicate key error. Order number must be unique.'
-      });
-    }
-
-    next(error);
-  }
-};
 
 export const deleteOrder = async (req, res, next) => {
   const session = await mongoose.startSession();
