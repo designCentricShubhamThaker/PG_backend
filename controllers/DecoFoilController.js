@@ -3,6 +3,20 @@ import OrderItem from '../models/OrderItem.js';
 import FoilingItem from '../models/FoilingItem.js';
 import mongoose from 'mongoose';
 
+// Decoration sequences - must match your socket logic
+const DECORATION_SEQUENCES = {
+  'coating': ['coating'],
+  'coating_printing': ['coating', 'printing'],
+  'coating_printing_foiling': ['coating', 'printing', 'foiling'],
+  'printing': ['printing'],
+  'printing_foiling': ['printing', 'foiling'],
+  'foiling': ['foiling'],
+  'coating_foiling': ['coating', 'foiling'],
+  'frosting': ['frosting'],
+  'frosting_printing': ['frosting', 'printing'],
+  'frosting_printing_foiling': ['frosting', 'printing', 'foiling']
+};
+
 export const getFoilOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
@@ -14,69 +28,187 @@ export const getFoilOrders = async (req, res, next) => {
       filter.order_status = 'Completed';
     }
 
+    // Fetch orders with ALL team assignments populated for sequence checking
     const orders = await Order.find(filter)
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.foiling',
-          model: 'FoilingItem',
-          populate: {
-            path: 'glass_item_id',
-            model: 'GlassItem'
+        populate: [
+          { 
+            path: 'team_assignments.glass', 
+            model: 'GlassItem' 
+          },
+          {
+            path: 'team_assignments.foiling',
+            model: 'FoilingItem',
+            populate: {
+              path: 'glass_item_id',
+              model: 'GlassItem'
+            }
+          },
+          { 
+            path: 'team_assignments.coating', 
+            model: 'CoatingItem' 
+          },
+          { 
+            path: 'team_assignments.printing', 
+            model: 'PrintingItem' 
+          },
+          { 
+            path: 'team_assignments.frosting', 
+            model: 'FrostingItem' 
           }
-        }
+        ]
       })
       .lean();
 
+    console.log(`📊 Found ${orders.length} orders, filtering for foiling team with sequence logic`);
+
     const filteredOrders = orders
-      .filter(order =>
-        order.item_ids.some(item => item.team_assignments?.foiling?.length > 0)
-      )
       .map(order => {
-        const filteredItems = order.item_ids
-          .filter(item => item.team_assignments?.foiling?.length > 0)
-          .map(item => {
-            const foilingItems = item.team_assignments.foiling.map(foilingItem => {
-              // Get glass item details from the populated glass_item_id
-              const glassItem = foilingItem.glass_item_id;
+        console.log(`🔍 Processing order: ${order.order_number}`);
+        
+        const validFoilingItems = [];
 
-              // Structure foiling item to match glass item format
-              return {
-                _id: foilingItem._id, // ✅ Keep the actual database ID
-                itemId: foilingItem.itemId,
-                orderNumber: foilingItem.orderNumber,
-                glass_item_id: glassItem._id,
-                glass_name: glassItem.glass_name,
-                quantity: glassItem.quantity,
-                weight: glassItem.weight,
-                neck_size: glassItem.neck_size,
-                decoration: glassItem.decoration,
-                decoration_no: glassItem.decoration_no,
-                decoration_details: glassItem.decoration_details,
-                team: "Foiling Team",
-                status: foilingItem.status || 'Pending',
-                team_tracking: foilingItem.team_tracking || {
-                  total_completed_qty: 0,
-                  completed_entries: [],
-                  last_updated: null
+        order.item_ids.forEach(item => {
+          const foilingAssignments = item.team_assignments?.foiling || [];
+          const glassAssignments = item.team_assignments?.glass || [];
+
+          foilingAssignments.forEach(foilingItem => {
+            const glassItemId = foilingItem.glass_item_id?._id || foilingItem.glass_item_id;
+            
+            // Find the corresponding glass item
+            const glassItem = glassAssignments.find(glass => 
+              glass._id?.toString() === glassItemId?.toString()
+            );
+
+            if (!glassItem) {
+              console.log(`❌ Glass item not found for foiling assignment: ${foilingItem._id}`);
+              return;
+            }
+
+            const decorationType = glassItem.decoration_details?.type || glassItem.decoration;
+            
+            if (!decorationType || !DECORATION_SEQUENCES[decorationType]) {
+              console.log(`ℹ️ No decoration sequence for glass ${glassItem.glass_name}, skipping`);
+              return;
+            }
+
+            const sequence = DECORATION_SEQUENCES[decorationType];
+            const foilingIndex = sequence.indexOf('foiling');
+
+            // If foiling is not in the sequence, skip
+            if (foilingIndex === -1) {
+              console.log(`ℹ️ Foiling not in sequence for glass ${glassItem.glass_name}, skipping`);
+              return;
+            }
+
+            console.log(`📋 Glass ${glassItem.glass_name} sequence: ${sequence.join(' → ')}`);
+            console.log(`📍 Foiling position: ${foilingIndex}`);
+
+            // Check if all previous teams in sequence are completed
+            let canShowToFoiling = true;
+            const previousTeams = sequence.slice(0, foilingIndex);
+
+            console.log(`🔍 Checking previous teams: ${previousTeams.join(', ')}`);
+
+            for (const prevTeam of previousTeams) {
+              const isCompleted = checkTeamCompletionForGlassItem(
+                order, 
+                item, 
+                prevTeam, 
+                glassItemId
+              );
+
+              console.log(`📊 ${prevTeam} completion for glass ${glassItem.glass_name}: ${isCompleted ? '✅ COMPLETED' : '❌ PENDING'}`);
+
+              if (!isCompleted) {
+                canShowToFoiling = false;
+                console.log(`⏳ Cannot show to foiling - ${prevTeam} not completed for glass ${glassItem.glass_name}`);
+                break;
+              }
+            }
+
+            // Special case: If foiling is the first team, check if glass is completed
+            if (foilingIndex === 0) {
+              const glassCompleted = glassItem.team_tracking?.total_completed_qty >= glassItem.quantity;
+              console.log(`🏭 Glass completion check for ${glassItem.glass_name}: ${glassCompleted ? '✅ COMPLETED' : '❌ PENDING'} (${glassItem.team_tracking?.total_completed_qty || 0}/${glassItem.quantity})`);
+              
+              if (!glassCompleted) {
+                canShowToFoiling = false;
+                console.log(`⏳ Cannot show to foiling - glass not completed for ${glassItem.glass_name}`);
+              }
+            }
+
+            if (canShowToFoiling) {
+              console.log(`✅ Adding foiling item to valid list: ${glassItem.glass_name}`);
+              
+              // Structure foiling item to match expected format
+              validFoilingItems.push({
+                item: {
+                  ...item,
+                  team_assignments: { foiling: [foilingItem] }
                 },
-                createdAt: foilingItem.createdAt,
-                updatedAt: foilingItem.updatedAt,
-                __v: foilingItem.__v
-              };
-            });
-
-            return {
-              ...item,
-              team_assignments: { foiling: foilingItems }
-            };
+                foilingAssignment: {
+                  _id: foilingItem._id,
+                  itemId: foilingItem.itemId,
+                  orderNumber: foilingItem.orderNumber,
+                  glass_item_id: glassItem._id,
+                  glass_name: glassItem.glass_name,
+                  quantity: glassItem.quantity,
+                  weight: glassItem.weight,
+                  neck_size: glassItem.neck_size,
+                  decoration: glassItem.decoration,
+                  decoration_no: glassItem.decoration_no,
+                  decoration_details: glassItem.decoration_details,
+                  team: "Foiling Team",
+                  status: foilingItem.status || 'Pending',
+                  team_tracking: foilingItem.team_tracking || {
+                    total_completed_qty: 0,
+                    completed_entries: [],
+                    last_updated: null
+                  },
+                  createdAt: foilingItem.createdAt,
+                  updatedAt: foilingItem.updatedAt,
+                  __v: foilingItem.__v
+                }
+              });
+            }
           });
+        });
+
+        if (validFoilingItems.length === 0) {
+          console.log(`❌ No valid foiling items for order ${order.order_number}`);
+          return null;
+        }
+
+        // Group items by item ID and combine foiling assignments
+        const itemsMap = new Map();
+        
+        validFoilingItems.forEach(({ item, foilingAssignment }) => {
+          const itemId = item._id.toString();
+          
+          if (!itemsMap.has(itemId)) {
+            itemsMap.set(itemId, {
+              ...item,
+              team_assignments: { foiling: [] }
+            });
+          }
+          
+          itemsMap.get(itemId).team_assignments.foiling.push(foilingAssignment);
+        });
+
+        const filteredItems = Array.from(itemsMap.values());
+
+        console.log(`✅ Order ${order.order_number}: ${filteredItems.length} items with valid foiling assignments`);
 
         return {
           ...order,
           item_ids: filteredItems
         };
-      });
+      })
+      .filter(order => order !== null);
+
+    console.log(`📊 Final result: ${filteredOrders.length} orders ready for foiling team`);
 
     res.status(200).json({
       success: true,
@@ -88,6 +220,30 @@ export const getFoilOrders = async (req, res, next) => {
     next(error);
   }
 };
+
+// Helper function to check if a team is completed for a specific glass item
+function checkTeamCompletionForGlassItem(order, item, teamName, glassItemId) {
+  const teamAssignments = item.team_assignments?.[teamName] || [];
+
+  for (const assignment of teamAssignments) {
+    let assignmentGlassId;
+    
+    // Handle different assignment structures
+    if (teamName === 'glass') {
+      assignmentGlassId = assignment._id;
+    } else {
+      assignmentGlassId = assignment.glass_item_id?._id || assignment.glass_item_id;
+    }
+
+    if (assignmentGlassId?.toString() === glassItemId?.toString()) {
+      const isCompleted = assignment.team_tracking?.total_completed_qty >= assignment.quantity;
+      return isCompleted;
+    }
+  }
+
+  // If no assignment found for this glass item in this team, consider it as not applicable (completed)
+  return true;
+}
 
 export const updateFoilTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -231,46 +387,33 @@ export const updateFoilTracking = async (req, res, next) => {
         console.log('✅ Successfully updated assignment:', assignment._id.toString());
       }
 
-      // ✅ FIXED: Better completion checking with error handling
+      // ✅ CRITICAL FIX: Better completion checking with proper null/undefined handling
       try {
-        const itemCompletionResult = await OrderItem.aggregate([
-          { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-          {
-            $lookup: {
-              from: 'foilingitems',
-              localField: 'team_assignments.foiling',
-              foreignField: '_id',
-              as: 'foiling_assignments'
-            }
-          },
-          {
-            $addFields: {
-              allFoilingCompleted: {
-                $cond: {
-                  if: { $gt: [{ $size: '$foiling_assignments' }, 0] },
-                  then: {
-                    $allElementsTrue: {
-                      $map: {
-                        input: '$foiling_assignments',
-                        as: 'assignment',
-                        in: {
-                          $gte: [
-                            { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                            '$$assignment.quantity'
-                          ]
-                        }
-                      }
-                    }
-                  },
-                  else: false
-                }
-              }
-            }
-          },
-          { $project: { allFoilingCompleted: 1 } }
-        ]).session(session);
+        // Check if all foiling assignments for this item are completed
+        const allFoilingAssignments = await FoilingItem.find({
+          itemId: itemId,
+          orderNumber: orderNumber
+        }).session(session);
 
-        if (itemCompletionResult[0]?.allFoilingCompleted) {
+        console.log('📊 Checking completion for foiling assignments:', allFoilingAssignments.length);
+
+        let allFoilingCompleted = false;
+        
+        if (allFoilingAssignments.length > 0) {
+          allFoilingCompleted = allFoilingAssignments.every(assignment => {
+            const completedQty = assignment.team_tracking?.total_completed_qty || 0;
+            const totalQty = assignment.quantity || 0;
+            const isCompleted = completedQty >= totalQty;
+            
+            console.log(`📋 Assignment ${assignment._id}: ${completedQty}/${totalQty} = ${isCompleted ? 'COMPLETED' : 'PENDING'}`);
+            
+            return isCompleted;
+          });
+        }
+
+        console.log('📊 All foiling assignments completed:', allFoilingCompleted);
+
+        if (allFoilingCompleted) {
           await OrderItem.findByIdAndUpdate(
             itemId,
             { $set: { 'team_status.foiling': 'Completed' } },
@@ -279,70 +422,50 @@ export const updateFoilTracking = async (req, res, next) => {
 
           console.log('✅ Item foiling completed');
 
-          // ✅ FIXED: Check if entire order is completed
-          const orderCompletionResult = await Order.aggregate([
-            { $match: { order_number: orderNumber } },
-            {
-              $lookup: {
-                from: 'orderitems',
-                localField: 'item_ids',
-                foreignField: '_id',
-                as: 'items',
-                pipeline: [
-                  {
-                    $lookup: {
-                      from: 'foilingitems',
-                      localField: 'team_assignments.foiling',
-                      foreignField: '_id',
-                      as: 'foiling_assignments'
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              $addFields: {
-                allItemsCompleted: {
-                  $allElementsTrue: {
-                    $map: {
-                      input: '$items',
-                      as: 'item',
-                      in: {
-                        $cond: {
-                          if: { $gt: [{ $size: '$$item.foiling_assignments' }, 0] },
-                          then: {
-                            $allElementsTrue: {
-                              $map: {
-                                input: '$$item.foiling_assignments',
-                                as: 'assignment',
-                                in: {
-                                  $gte: [
-                                    { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                    '$$assignment.quantity'
-                                  ]
-                                }
-                              }
-                            }
-                          },
-                          else: true
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            { $project: { allItemsCompleted: 1, order_status: 1 } }
-          ]).session(session);
+          // ✅ FIXED: Check if entire order is completed - simpler approach
+          const orderItems = await OrderItem.find({
+            _id: { $in: await Order.findOne({ order_number: orderNumber }).select('item_ids').then(o => o?.item_ids || []) }
+          }).session(session);
 
-          const orderResult = orderCompletionResult[0];
-          if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-            await Order.findOneAndUpdate(
-              { order_number: orderNumber },
-              { $set: { order_status: 'Completed' } },
-              { session }
-            );
-            console.log('✅ Order completed');
+          console.log('📊 Checking order completion - total items:', orderItems.length);
+
+          let allItemsCompleted = true;
+
+          for (const orderItem of orderItems) {
+            // Get all foiling assignments for this item
+            const itemFoilingAssignments = await FoilingItem.find({
+              itemId: orderItem._id,
+              orderNumber: orderNumber
+            }).session(session);
+
+            if (itemFoilingAssignments.length > 0) {
+              const itemFoilingCompleted = itemFoilingAssignments.every(assignment => {
+                const completedQty = assignment.team_tracking?.total_completed_qty || 0;
+                const totalQty = assignment.quantity || 0;
+                return completedQty >= totalQty;
+              });
+
+              if (!itemFoilingCompleted) {
+                allItemsCompleted = false;
+                console.log(`📋 Item ${orderItem._id} foiling not completed`);
+                break;
+              }
+            }
+          }
+
+          console.log('📊 All order items foiling completed:', allItemsCompleted);
+
+          if (allItemsCompleted) {
+            const currentOrder = await Order.findOne({ order_number: orderNumber }).session(session);
+            
+            if (currentOrder && currentOrder.order_status !== 'Completed') {
+              await Order.findOneAndUpdate(
+                { order_number: orderNumber },
+                { $set: { order_status: 'Completed' } },
+                { session }
+              );
+              console.log('✅ Order completed');
+            }
           }
         }
       } catch (completionError) {

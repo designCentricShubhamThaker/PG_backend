@@ -3,6 +3,20 @@ import OrderItem from '../models/OrderItem.js';
 import FrostingItem from '../models/FrostingItem.js';
 import mongoose from 'mongoose';
 
+// Decoration sequences - must match your socket logic
+const DECORATION_SEQUENCES = {
+  'coating': ['coating'],
+  'coating_printing': ['coating', 'printing'],
+  'coating_printing_foiling': ['coating', 'printing', 'foiling'],
+  'printing': ['printing'],
+  'printing_foiling': ['printing', 'foiling'],
+  'foiling': ['foiling'],
+  'coating_foiling': ['coating', 'foiling'],
+  'frosting': ['frosting'],
+  'frosting_printing': ['frosting', 'printing'],
+  'frosting_printing_foiling': ['frosting', 'printing', 'foiling']
+};
+
 export const getFrostOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
@@ -14,69 +28,187 @@ export const getFrostOrders = async (req, res, next) => {
       filter.order_status = 'Completed';
     }
 
+    // Fetch orders with ALL team assignments populated for sequence checking
     const orders = await Order.find(filter)
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.frosting',
-          model: 'FrostingItem',
-          populate: {
-            path: 'glass_item_id',
-            model: 'GlassItem'
+        populate: [
+          { 
+            path: 'team_assignments.glass', 
+            model: 'GlassItem' 
+          },
+          {
+            path: 'team_assignments.frosting',
+            model: 'FrostingItem',
+            populate: {
+              path: 'glass_item_id',
+              model: 'GlassItem'
+            }
+          },
+          { 
+            path: 'team_assignments.coating', 
+            model: 'CoatingItem' 
+          },
+          { 
+            path: 'team_assignments.printing', 
+            model: 'PrintingItem' 
+          },
+          { 
+            path: 'team_assignments.foiling', 
+            model: 'FoilingItem' 
           }
-        }
+        ]
       })
       .lean();
 
+    console.log(`📊 Found ${orders.length} orders, filtering for frosting team with sequence logic`);
+
     const filteredOrders = orders
-      .filter(order =>
-        order.item_ids.some(item => item.team_assignments?.frosting?.length > 0)
-      )
       .map(order => {
-        const filteredItems = order.item_ids
-          .filter(item => item.team_assignments?.frosting?.length > 0)
-          .map(item => {
-            const frostingItems = item.team_assignments.frosting.map(frostingItem => {
-              // Get glass item details from the populated glass_item_id
-              const glassItem = frostingItem.glass_item_id;
+        console.log(`🔍 Processing order: ${order.order_number}`);
+        
+        const validFrostingItems = [];
 
-              // Structure frosting item to match glass item format
-              return {
-                _id: frostingItem._id, // ✅ Keep the actual database ID
-                itemId: frostingItem.itemId,
-                orderNumber: frostingItem.orderNumber,
-                glass_item_id: glassItem._id,
-                glass_name: glassItem.glass_name,
-                quantity: glassItem.quantity,
-                weight: glassItem.weight,
-                neck_size: glassItem.neck_size,
-                decoration: glassItem.decoration,
-                decoration_no: glassItem.decoration_no,
-                decoration_details: glassItem.decoration_details,
-                team: "Frosting Team",
-                status: frostingItem.status || 'Pending',
-                team_tracking: frostingItem.team_tracking || {
-                  total_completed_qty: 0,
-                  completed_entries: [],
-                  last_updated: null
+        order.item_ids.forEach(item => {
+          const frostingAssignments = item.team_assignments?.frosting || [];
+          const glassAssignments = item.team_assignments?.glass || [];
+
+          frostingAssignments.forEach(frostingItem => {
+            const glassItemId = frostingItem.glass_item_id?._id || frostingItem.glass_item_id;
+            
+            // Find the corresponding glass item
+            const glassItem = glassAssignments.find(glass => 
+              glass._id?.toString() === glassItemId?.toString()
+            );
+
+            if (!glassItem) {
+              console.log(`❌ Glass item not found for frosting assignment: ${frostingItem._id}`);
+              return;
+            }
+
+            const decorationType = glassItem.decoration_details?.type || glassItem.decoration;
+            
+            if (!decorationType || !DECORATION_SEQUENCES[decorationType]) {
+              console.log(`ℹ️ No decoration sequence for glass ${glassItem.glass_name}, skipping`);
+              return;
+            }
+
+            const sequence = DECORATION_SEQUENCES[decorationType];
+            const frostingIndex = sequence.indexOf('frosting');
+
+            // If frosting is not in the sequence, skip
+            if (frostingIndex === -1) {
+              console.log(`ℹ️ Frosting not in sequence for glass ${glassItem.glass_name}, skipping`);
+              return;
+            }
+
+            console.log(`📋 Glass ${glassItem.glass_name} sequence: ${sequence.join(' → ')}`);
+            console.log(`📍 Frosting position: ${frostingIndex}`);
+
+            // Check if all previous teams in sequence are completed
+            let canShowToFrosting = true;
+            const previousTeams = sequence.slice(0, frostingIndex);
+
+            console.log(`🔍 Checking previous teams: ${previousTeams.join(', ')}`);
+
+            for (const prevTeam of previousTeams) {
+              const isCompleted = checkTeamCompletionForGlassItem(
+                order, 
+                item, 
+                prevTeam, 
+                glassItemId
+              );
+
+              console.log(`📊 ${prevTeam} completion for glass ${glassItem.glass_name}: ${isCompleted ? '✅ COMPLETED' : '❌ PENDING'}`);
+
+              if (!isCompleted) {
+                canShowToFrosting = false;
+                console.log(`⏳ Cannot show to frosting - ${prevTeam} not completed for glass ${glassItem.glass_name}`);
+                break;
+              }
+            }
+
+            // Special case: If frosting is the first team, check if glass is completed
+            if (frostingIndex === 0) {
+              const glassCompleted = glassItem.team_tracking?.total_completed_qty >= glassItem.quantity;
+              console.log(`🏭 Glass completion check for ${glassItem.glass_name}: ${glassCompleted ? '✅ COMPLETED' : '❌ PENDING'} (${glassItem.team_tracking?.total_completed_qty || 0}/${glassItem.quantity})`);
+              
+              if (!glassCompleted) {
+                canShowToFrosting = false;
+                console.log(`⏳ Cannot show to frosting - glass not completed for ${glassItem.glass_name}`);
+              }
+            }
+
+            if (canShowToFrosting) {
+              console.log(`✅ Adding frosting item to valid list: ${glassItem.glass_name}`);
+              
+              // Structure frosting item to match expected format
+              validFrostingItems.push({
+                item: {
+                  ...item,
+                  team_assignments: { frosting: [frostingItem] }
                 },
-                createdAt: frostingItem.createdAt,
-                updatedAt: frostingItem.updatedAt,
-                __v: frostingItem.__v
-              };
-            });
-
-            return {
-              ...item,
-              team_assignments: { frosting: frostingItems }
-            };
+                frostingAssignment: {
+                  _id: frostingItem._id,
+                  itemId: frostingItem.itemId,
+                  orderNumber: frostingItem.orderNumber,
+                  glass_item_id: glassItem._id,
+                  glass_name: glassItem.glass_name,
+                  quantity: glassItem.quantity,
+                  weight: glassItem.weight,
+                  neck_size: glassItem.neck_size,
+                  decoration: glassItem.decoration,
+                  decoration_no: glassItem.decoration_no,
+                  decoration_details: glassItem.decoration_details,
+                  team: "Frosting Team",
+                  status: frostingItem.status || 'Pending',
+                  team_tracking: frostingItem.team_tracking || {
+                    total_completed_qty: 0,
+                    completed_entries: [],
+                    last_updated: null
+                  },
+                  createdAt: frostingItem.createdAt,
+                  updatedAt: frostingItem.updatedAt,
+                  __v: frostingItem.__v
+                }
+              });
+            }
           });
+        });
+
+        if (validFrostingItems.length === 0) {
+          console.log(`❌ No valid frosting items for order ${order.order_number}`);
+          return null;
+        }
+
+        // Group items by item ID and combine frosting assignments
+        const itemsMap = new Map();
+        
+        validFrostingItems.forEach(({ item, frostingAssignment }) => {
+          const itemId = item._id.toString();
+          
+          if (!itemsMap.has(itemId)) {
+            itemsMap.set(itemId, {
+              ...item,
+              team_assignments: { frosting: [] }
+            });
+          }
+          
+          itemsMap.get(itemId).team_assignments.frosting.push(frostingAssignment);
+        });
+
+        const filteredItems = Array.from(itemsMap.values());
+
+        console.log(`✅ Order ${order.order_number}: ${filteredItems.length} items with valid frosting assignments`);
 
         return {
           ...order,
           item_ids: filteredItems
         };
-      });
+      })
+      .filter(order => order !== null);
+
+    console.log(`📊 Final result: ${filteredOrders.length} orders ready for frosting team`);
 
     res.status(200).json({
       success: true,
@@ -88,6 +220,30 @@ export const getFrostOrders = async (req, res, next) => {
     next(error);
   }
 };
+
+// Helper function to check if a team is completed for a specific glass item
+function checkTeamCompletionForGlassItem(order, item, teamName, glassItemId) {
+  const teamAssignments = item.team_assignments?.[teamName] || [];
+
+  for (const assignment of teamAssignments) {
+    let assignmentGlassId;
+    
+    // Handle different assignment structures
+    if (teamName === 'glass') {
+      assignmentGlassId = assignment._id;
+    } else {
+      assignmentGlassId = assignment.glass_item_id?._id || assignment.glass_item_id;
+    }
+
+    if (assignmentGlassId?.toString() === glassItemId?.toString()) {
+      const isCompleted = assignment.team_tracking?.total_completed_qty >= assignment.quantity;
+      return isCompleted;
+    }
+  }
+
+  // If no assignment found for this glass item in this team, consider it as not applicable (completed)
+  return true;
+}
 
 export const updateFrostTracking = async (req, res, next) => {
   const session = await mongoose.startSession();

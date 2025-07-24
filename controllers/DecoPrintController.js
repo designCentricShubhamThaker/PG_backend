@@ -3,6 +3,20 @@ import OrderItem from '../models/OrderItem.js';
 import PrintingItem from '../models/PrintingItem.js';
 import mongoose from 'mongoose';
 
+// Decoration sequences - must match your socket logic
+const DECORATION_SEQUENCES = {
+  'coating': ['coating'],
+  'coating_printing': ['coating', 'printing'],
+  'coating_printing_foiling': ['coating', 'printing', 'foiling'],
+  'printing': ['printing'],
+  'printing_foiling': ['printing', 'foiling'],
+  'foiling': ['foiling'],
+  'coating_foiling': ['coating', 'foiling'],
+  'frosting': ['frosting'],
+  'frosting_printing': ['frosting', 'printing'],
+  'frosting_printing_foiling': ['frosting', 'printing', 'foiling']
+};
+
 export const getPrintingOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
@@ -14,69 +28,187 @@ export const getPrintingOrders = async (req, res, next) => {
       filter.order_status = 'Completed';
     }
 
+    // Fetch orders with ALL team assignments populated for sequence checking
     const orders = await Order.find(filter)
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.printing',
-          model: 'PrintingItem',
-          populate: {
-            path: 'glass_item_id',
-            model: 'GlassItem'
+        populate: [
+          { 
+            path: 'team_assignments.glass', 
+            model: 'GlassItem' 
+          },
+          {
+            path: 'team_assignments.printing',
+            model: 'PrintingItem',
+            populate: {
+              path: 'glass_item_id',
+              model: 'GlassItem'
+            }
+          },
+          { 
+            path: 'team_assignments.coating', 
+            model: 'CoatingItem' 
+          },
+          { 
+            path: 'team_assignments.foiling', 
+            model: 'FoilingItem' 
+          },
+          { 
+            path: 'team_assignments.frosting', 
+            model: 'FrostingItem' 
           }
-        }
+        ]
       })
       .lean();
 
+    console.log(`📊 Found ${orders.length} orders, filtering for printing team with sequence logic`);
+
     const filteredOrders = orders
-      .filter(order =>
-        order.item_ids.some(item => item.team_assignments?.printing?.length > 0)
-      )
       .map(order => {
-        const filteredItems = order.item_ids
-          .filter(item => item.team_assignments?.printing?.length > 0)
-          .map(item => {
-            const printingItems = item.team_assignments.printing.map(printingItem => {
-              // Get glass item details from the populated glass_item_id
-              const glassItem = printingItem.glass_item_id;
+        console.log(`🔍 Processing order: ${order.order_number}`);
+        
+        const validPrintingItems = [];
 
-              // Structure printing item to match glass item format
-              return {
-                _id: printingItem._id, // ✅ Keep the actual database ID
-                itemId: printingItem.itemId,
-                orderNumber: printingItem.orderNumber,
-                glass_item_id: glassItem._id,
-                glass_name: glassItem.glass_name,
-                quantity: glassItem.quantity,
-                weight: glassItem.weight,
-                neck_size: glassItem.neck_size,
-                decoration: glassItem.decoration,
-                decoration_no: glassItem.decoration_no,
-                decoration_details: glassItem.decoration_details,
-                team: "Printing Team",
-                status: printingItem.status || 'Pending',
-                team_tracking: printingItem.team_tracking || {
-                  total_completed_qty: 0,
-                  completed_entries: [],
-                  last_updated: null
+        order.item_ids.forEach(item => {
+          const printingAssignments = item.team_assignments?.printing || [];
+          const glassAssignments = item.team_assignments?.glass || [];
+
+          printingAssignments.forEach(printingItem => {
+            const glassItemId = printingItem.glass_item_id?._id || printingItem.glass_item_id;
+            
+            // Find the corresponding glass item
+            const glassItem = glassAssignments.find(glass => 
+              glass._id?.toString() === glassItemId?.toString()
+            );
+
+            if (!glassItem) {
+              console.log(`❌ Glass item not found for printing assignment: ${printingItem._id}`);
+              return;
+            }
+
+            const decorationType = glassItem.decoration_details?.type || glassItem.decoration;
+            
+            if (!decorationType || !DECORATION_SEQUENCES[decorationType]) {
+              console.log(`ℹ️ No decoration sequence for glass ${glassItem.glass_name}, skipping`);
+              return;
+            }
+
+            const sequence = DECORATION_SEQUENCES[decorationType];
+            const printingIndex = sequence.indexOf('printing');
+
+            // If printing is not in the sequence, skip
+            if (printingIndex === -1) {
+              console.log(`ℹ️ Printing not in sequence for glass ${glassItem.glass_name}, skipping`);
+              return;
+            }
+
+            console.log(`📋 Glass ${glassItem.glass_name} sequence: ${sequence.join(' → ')}`);
+            console.log(`📍 Printing position: ${printingIndex}`);
+
+            // Check if all previous teams in sequence are completed
+            let canShowToPrinting = true;
+            const previousTeams = sequence.slice(0, printingIndex);
+
+            console.log(`🔍 Checking previous teams: ${previousTeams.join(', ')}`);
+
+            for (const prevTeam of previousTeams) {
+              const isCompleted = checkTeamCompletionForGlassItem(
+                order, 
+                item, 
+                prevTeam, 
+                glassItemId
+              );
+
+              console.log(`📊 ${prevTeam} completion for glass ${glassItem.glass_name}: ${isCompleted ? '✅ COMPLETED' : '❌ PENDING'}`);
+
+              if (!isCompleted) {
+                canShowToPrinting = false;
+                console.log(`⏳ Cannot show to printing - ${prevTeam} not completed for glass ${glassItem.glass_name}`);
+                break;
+              }
+            }
+
+            // Special case: If printing is the first team, check if glass is completed
+            if (printingIndex === 0) {
+              const glassCompleted = glassItem.team_tracking?.total_completed_qty >= glassItem.quantity;
+              console.log(`🏭 Glass completion check for ${glassItem.glass_name}: ${glassCompleted ? '✅ COMPLETED' : '❌ PENDING'} (${glassItem.team_tracking?.total_completed_qty || 0}/${glassItem.quantity})`);
+              
+              if (!glassCompleted) {
+                canShowToPrinting = false;
+                console.log(`⏳ Cannot show to printing - glass not completed for ${glassItem.glass_name}`);
+              }
+            }
+
+            if (canShowToPrinting) {
+              console.log(`✅ Adding printing item to valid list: ${glassItem.glass_name}`);
+              
+              // Structure printing item to match expected format
+              validPrintingItems.push({
+                item: {
+                  ...item,
+                  team_assignments: { printing: [printingItem] }
                 },
-                createdAt: printingItem.createdAt,
-                updatedAt: printingItem.updatedAt,
-                __v: printingItem.__v
-              };
-            });
-
-            return {
-              ...item,
-              team_assignments: { printing: printingItems }
-            };
+                printingAssignment: {
+                  _id: printingItem._id,
+                  itemId: printingItem.itemId,
+                  orderNumber: printingItem.orderNumber,
+                  glass_item_id: glassItem._id,
+                  glass_name: glassItem.glass_name,
+                  quantity: glassItem.quantity,
+                  weight: glassItem.weight,
+                  neck_size: glassItem.neck_size,
+                  decoration: glassItem.decoration,
+                  decoration_no: glassItem.decoration_no,
+                  decoration_details: glassItem.decoration_details,
+                  team: "Printing Team",
+                  status: printingItem.status || 'Pending',
+                  team_tracking: printingItem.team_tracking || {
+                    total_completed_qty: 0,
+                    completed_entries: [],
+                    last_updated: null
+                  },
+                  createdAt: printingItem.createdAt,
+                  updatedAt: printingItem.updatedAt,
+                  __v: printingItem.__v
+                }
+              });
+            }
           });
+        });
+
+        if (validPrintingItems.length === 0) {
+          console.log(`❌ No valid printing items for order ${order.order_number}`);
+          return null;
+        }
+
+        // Group items by item ID and combine printing assignments
+        const itemsMap = new Map();
+        
+        validPrintingItems.forEach(({ item, printingAssignment }) => {
+          const itemId = item._id.toString();
+          
+          if (!itemsMap.has(itemId)) {
+            itemsMap.set(itemId, {
+              ...item,
+              team_assignments: { printing: [] }
+            });
+          }
+          
+          itemsMap.get(itemId).team_assignments.printing.push(printingAssignment);
+        });
+
+        const filteredItems = Array.from(itemsMap.values());
+
+        console.log(`✅ Order ${order.order_number}: ${filteredItems.length} items with valid printing assignments`);
 
         return {
           ...order,
           item_ids: filteredItems
         };
-      });
+      })
+      .filter(order => order !== null);
+
+    console.log(`📊 Final result: ${filteredOrders.length} orders ready for printing team`);
 
     res.status(200).json({
       success: true,
@@ -88,6 +220,30 @@ export const getPrintingOrders = async (req, res, next) => {
     next(error);
   }
 };
+
+// Helper function to check if a team is completed for a specific glass item
+function checkTeamCompletionForGlassItem(order, item, teamName, glassItemId) {
+  const teamAssignments = item.team_assignments?.[teamName] || [];
+
+  for (const assignment of teamAssignments) {
+    let assignmentGlassId;
+    
+    // Handle different assignment structures
+    if (teamName === 'glass') {
+      assignmentGlassId = assignment._id;
+    } else {
+      assignmentGlassId = assignment.glass_item_id?._id || assignment.glass_item_id;
+    }
+
+    if (assignmentGlassId?.toString() === glassItemId?.toString()) {
+      const isCompleted = assignment.team_tracking?.total_completed_qty >= assignment.quantity;
+      return isCompleted;
+    }
+  }
+
+  // If no assignment found for this glass item in this team, consider it as not applicable (completed)
+  return true;
+}
 
 export const updatePrintingTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
