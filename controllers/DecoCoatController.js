@@ -1,7 +1,9 @@
+import { updateOrderCompletionStatus } from '../helpers/ordercompletion.js';
 import Order from '../models/Order.js';
 import OrderItem from '../models/OrderItem.js';
 import CoatingItem from '../models/CoatingItem.js';
-
+import FoilingItem from '../models/FoilingItem.js';
+import FrostingItem from '../models/FrostingItem.js';
 import mongoose from 'mongoose';
 
 // Decoration sequences - must match your socket logic
@@ -18,7 +20,9 @@ const DECORATION_SEQUENCES = {
   'frosting_printing_foiling': ['frosting', 'printing', 'foiling']
 };
 
-// ============= COATING FUNCTIONS =============
+// ================================
+// COATING TEAM FUNCTIONS
+// ================================
 
 export const getCoatingOrders = async (req, res, next) => {
   try {
@@ -31,35 +35,15 @@ export const getCoatingOrders = async (req, res, next) => {
       filter.order_status = 'Completed';
     }
 
-    // Fetch orders with ALL team assignments populated for sequence checking
     const orders = await Order.find(filter)
       .populate({
         path: 'item_ids',
         populate: [
-          { 
-            path: 'team_assignments.glass', 
-            model: 'GlassItem' 
-          },
-          {
-            path: 'team_assignments.coating',
-            model: 'CoatingItem',
-            populate: {
-              path: 'glass_item_id',
-              model: 'GlassItem'
-            }
-          },
-          { 
-            path: 'team_assignments.printing', 
-            model: 'PrintingItem' 
-          },
-          { 
-            path: 'team_assignments.foiling', 
-            model: 'FoilingItem' 
-          },
-          { 
-            path: 'team_assignments.frosting', 
-            model: 'FrostingItem' 
-          }
+          { path: 'team_assignments.glass', model: 'GlassItem' },
+          { path: 'team_assignments.printing', model: 'PrintingItem' },
+          { path: 'team_assignments.coating', model: 'CoatingItem' },
+          { path: 'team_assignments.foiling', model: 'FoilingItem' },
+          { path: 'team_assignments.frosting', model: 'FrostingItem' }
         ]
       })
       .lean();
@@ -79,7 +63,6 @@ export const getCoatingOrders = async (req, res, next) => {
           coatingAssignments.forEach(coatingItem => {
             const glassItemId = coatingItem.glass_item_id?._id || coatingItem.glass_item_id;
             
-            // Find the corresponding glass item
             const glassItem = glassAssignments.find(glass => 
               glass._id?.toString() === glassItemId?.toString()
             );
@@ -99,7 +82,6 @@ export const getCoatingOrders = async (req, res, next) => {
             const sequence = DECORATION_SEQUENCES[decorationType];
             const coatingIndex = sequence.indexOf('coating');
 
-            // If coating is not in the sequence, skip
             if (coatingIndex === -1) {
               console.log(`ℹ️ Coating not in sequence for glass ${glassItem.glass_name}, skipping`);
               return;
@@ -108,19 +90,13 @@ export const getCoatingOrders = async (req, res, next) => {
             console.log(`📋 Glass ${glassItem.glass_name} sequence: ${sequence.join(' → ')}`);
             console.log(`📍 Coating position: ${coatingIndex}`);
 
-            // Check if all previous teams in sequence are completed
             let canShowToCoating = true;
             const previousTeams = sequence.slice(0, coatingIndex);
 
             console.log(`🔍 Checking previous teams: ${previousTeams.join(', ')}`);
 
             for (const prevTeam of previousTeams) {
-              const isCompleted = checkTeamCompletionForGlassItem(
-                order, 
-                item, 
-                prevTeam, 
-                glassItemId
-              );
+              const isCompleted = checkTeamCompletionForGlassItem(order, item, prevTeam, glassItemId);
 
               console.log(`📊 ${prevTeam} completion for glass ${glassItem.glass_name}: ${isCompleted ? '✅ COMPLETED' : '❌ PENDING'}`);
 
@@ -131,7 +107,6 @@ export const getCoatingOrders = async (req, res, next) => {
               }
             }
 
-            // Special case: If coating is the first team, check if glass is completed
             if (coatingIndex === 0) {
               const glassCompleted = glassItem.team_tracking?.total_completed_qty >= glassItem.quantity;
               console.log(`🏭 Glass completion check for ${glassItem.glass_name}: ${glassCompleted ? '✅ COMPLETED' : '❌ PENDING'} (${glassItem.team_tracking?.total_completed_qty || 0}/${glassItem.quantity})`);
@@ -145,14 +120,13 @@ export const getCoatingOrders = async (req, res, next) => {
             if (canShowToCoating) {
               console.log(`✅ Adding coating item to valid list: ${glassItem.glass_name}`);
               
-              // Structure coating item to match expected format
               validCoatingItems.push({
                 item: {
                   ...item,
                   team_assignments: { coating: [coatingItem] }
                 },
                 coatingAssignment: {
-                  _id: coatingItem._id, // ✅ Keep the actual database ID
+                  _id: coatingItem._id,
                   itemId: coatingItem.itemId,
                   orderNumber: coatingItem.orderNumber,
                   glass_item_id: glassItem._id,
@@ -184,7 +158,6 @@ export const getCoatingOrders = async (req, res, next) => {
           return null;
         }
 
-        // Group items by item ID and combine coating assignments
         const itemsMap = new Map();
         
         validCoatingItems.forEach(({ item, coatingAssignment }) => {
@@ -224,30 +197,6 @@ export const getCoatingOrders = async (req, res, next) => {
   }
 };
 
-// Helper function to check if a team is completed for a specific glass item
-function checkTeamCompletionForGlassItem(order, item, teamName, glassItemId) {
-  const teamAssignments = item.team_assignments?.[teamName] || [];
-
-  for (const assignment of teamAssignments) {
-    let assignmentGlassId;
-    
-    // Handle different assignment structures
-    if (teamName === 'glass') {
-      assignmentGlassId = assignment._id;
-    } else {
-      assignmentGlassId = assignment.glass_item_id?._id || assignment.glass_item_id;
-    }
-
-    if (assignmentGlassId?.toString() === glassItemId?.toString()) {
-      const isCompleted = assignment.team_tracking?.total_completed_qty >= assignment.quantity;
-      return isCompleted;
-    }
-  }
-
-  // If no assignment found for this glass item in this team, consider it as not applicable (completed)
-  return true;
-}
-
 export const updateCoatingTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
 
@@ -282,40 +231,32 @@ export const updateCoatingTracking = async (req, res, next) => {
       if (!item) throw new Error('Item not found');
 
       console.log('Processing updates for item:', itemId);
-      console.log('Item team assignments:', item.team_assignments);
 
       for (const update of updatesArray) {
         console.log('Processing update for assignmentId:', update.assignmentId);
         
-        // ✅ FIXED: Better assignment lookup with multiple strategies
         let assignment = null;
         
         try {
-          // Strategy 1: Direct lookup in CoatingItem collection
           assignment = await CoatingItem.findById(update.assignmentId).session(session);
           console.log('Direct lookup result:', assignment ? 'Found' : 'Not found');
           
-          // Strategy 2: If not found, check if it's in the item's team_assignments
           if (!assignment) {
             const coatingAssignmentIds = item.team_assignments?.coating || [];
             console.log('Checking assignment IDs:', coatingAssignmentIds);
             
-            // Check if the assignment ID exists in the item's assignments
             const assignmentExists = coatingAssignmentIds.some(
               id => id.toString() === update.assignmentId.toString()
             );
             
             if (assignmentExists) {
-              // Try to find it again, maybe it was just created
               assignment = await CoatingItem.findById(update.assignmentId).session(session);
             }
           }
           
-          // Strategy 3: If still not found, try to find by glass_item_id and itemId
           if (!assignment) {
             console.log('Attempting to find assignment by glass_item_id and itemId');
             
-            // Get all coating assignments for this item
             const allCoatingAssignments = await CoatingItem.find({
               itemId: itemId,
               orderNumber: orderNumber
@@ -323,7 +264,6 @@ export const updateCoatingTracking = async (req, res, next) => {
             
             console.log('Found coating assignments for item:', allCoatingAssignments.length);
             
-            // Try to match by the assignment ID
             assignment = allCoatingAssignments.find(
               a => a._id.toString() === update.assignmentId.toString()
             );
@@ -333,12 +273,10 @@ export const updateCoatingTracking = async (req, res, next) => {
           console.error('Error during assignment lookup:', lookupError);
         }
         
-        // ✅ FIXED: If still not found, provide detailed error information
         if (!assignment) {
           console.error('❌ Assignment not found with ID:', update.assignmentId);
           console.error('Available assignment IDs in item:', item.team_assignments?.coating || []);
           
-          // Try to get all coating assignments for this order to debug
           const allOrderCoatingAssignments = await CoatingItem.find({
             orderNumber: orderNumber
           }).session(session);
@@ -354,7 +292,6 @@ export const updateCoatingTracking = async (req, res, next) => {
 
         console.log('✅ Found assignment:', assignment._id.toString());
 
-        // ✅ FIXED: Validate quantity with proper error handling
         const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
         const remaining = assignment.quantity - currentCompleted;
 
@@ -364,7 +301,6 @@ export const updateCoatingTracking = async (req, res, next) => {
           );
         }
 
-        // ✅ FIXED: Update existing assignment with proper validation
         const updateResult = await CoatingItem.findByIdAndUpdate(
           assignment._id,
           {
@@ -390,135 +326,17 @@ export const updateCoatingTracking = async (req, res, next) => {
         console.log('✅ Successfully updated assignment:', assignment._id.toString());
       }
 
-      // ✅ FIXED: Better completion checking with error handling
-      try {
-        const itemCompletionResult = await OrderItem.aggregate([
-          { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-          {
-            $lookup: {
-              from: 'coatingitems',
-              localField: 'team_assignments.coating',
-              foreignField: '_id',
-              as: 'coating_assignments'
-            }
-          },
-          {
-            $addFields: {
-              allCoatingCompleted: {
-                $cond: {
-                  if: { $gt: [{ $size: '$coating_assignments' }, 0] },
-                  then: {
-                    $allElementsTrue: {
-                      $map: {
-                        input: '$coating_assignments',
-                        as: 'assignment',
-                        in: {
-                          $gte: [
-                            { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                            '$$assignment.quantity'
-                          ]
-                        }
-                      }
-                    }
-                  },
-                  else: false
-                }
-              }
-            }
-          },
-          { $project: { allCoatingCompleted: 1 } }
-        ]).session(session);
-
-        if (itemCompletionResult[0]?.allCoatingCompleted) {
-          await OrderItem.findByIdAndUpdate(
-            itemId,
-            { $set: { 'team_status.coating': 'Completed' } },
-            { session }
-          );
-
-          console.log('✅ Item coating completed');
-
-          // ✅ FIXED: Check if entire order is completed
-          const orderCompletionResult = await Order.aggregate([
-            { $match: { order_number: orderNumber } },
-            {
-              $lookup: {
-                from: 'orderitems',
-                localField: 'item_ids',
-                foreignField: '_id',
-                as: 'items',
-                pipeline: [
-                  {
-                    $lookup: {
-                      from: 'coatingitems',
-                      localField: 'team_assignments.coating',
-                      foreignField: '_id',
-                      as: 'coating_assignments'
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              $addFields: {
-                allItemsCompleted: {
-                  $allElementsTrue: {
-                    $map: {
-                      input: '$items',
-                      as: 'item',
-                      in: {
-                        $cond: {
-                          if: { $gt: [{ $size: '$$item.coating_assignments' }, 0] },
-                          then: {
-                            $allElementsTrue: {
-                              $map: {
-                                input: '$$item.coating_assignments',
-                                as: 'assignment',
-                                in: {
-                                  $gte: [
-                                    { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                    '$$assignment.quantity'
-                                  ]
-                                }
-                              }
-                            }
-                          },
-                          else: true
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            { $project: { allItemsCompleted: 1, order_status: 1 } }
-          ]).session(session);
-
-          const orderResult = orderCompletionResult[0];
-          if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-            await Order.findOneAndUpdate(
-              { order_number: orderNumber },
-              { $set: { order_status: 'Completed' } },
-              { session }
-            );
-            console.log('✅ Order completed');
-          }
-        }
-      } catch (completionError) {
-        console.error('❌ Error checking completion status:', completionError);
-        // Don't throw here, just log - the update was successful
-      }
+      await updateOrderCompletionStatus(orderNumber, itemId, 'coating', session);
     });
 
-    // ✅ CRITICAL FIX: Fetch full order with ALL team assignments for decoration sequence
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
         populate: [
           { path: 'team_assignments.glass', model: 'GlassItem' },
           { path: 'team_assignments.printing', model: 'PrintingItem' },
-          { path: 'team_assignments.foiling', model: 'FoilingItem' },
           { path: 'team_assignments.coating', model: 'CoatingItem' },
+          { path: 'team_assignments.foiling', model: 'FoilingItem' },
           { path: 'team_assignments.frosting', model: 'FrostingItem' }
         ]
       })
@@ -538,7 +356,7 @@ export const updateCoatingTracking = async (req, res, next) => {
       success: true,
       message: 'Coating tracking updated successfully',
       data: {
-        order: updatedOrder, // ✅ Send full order (with all team assignments!)
+        order: updatedOrder,
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
@@ -546,7 +364,6 @@ export const updateCoatingTracking = async (req, res, next) => {
   } catch (error) {
     console.error('❌ Error updating coating tracking:', error);
     
-    // ✅ FIXED: Better error categorization
     if (error.message.includes('not found')) {
       return res.status(404).json({ success: false, message: error.message });
     }
@@ -561,4 +378,4 @@ export const updateCoatingTracking = async (req, res, next) => {
   } finally {
     await session.endSession();
   }
-};
+}

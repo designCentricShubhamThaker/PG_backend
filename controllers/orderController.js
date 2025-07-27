@@ -467,9 +467,29 @@ export const updateOrder = async (req, res, next) => {
     const existingOrder = await Order.findById(req.params.id)
       .populate({
         path: 'item_ids',
-        populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps team_assignments.accessories team_assignments.coating team_assignments.printing team_assignments.foiling team_assignments.frosting',
-        },
+        populate: [
+          { path: 'team_assignments.glass' },
+          { path: 'team_assignments.caps' },
+          { path: 'team_assignments.boxes' },
+          { path: 'team_assignments.pumps' },
+          { path: 'team_assignments.accessories' },
+          {
+            path: 'team_assignments.coating',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.printing',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.foiling',
+            populate: { path: 'glass_item_id' }
+          },
+          {
+            path: 'team_assignments.frosting',
+            populate: { path: 'glass_item_id' }
+          }
+        ]
       });
 
     if (!existingOrder) {
@@ -493,32 +513,90 @@ export const updateOrder = async (req, res, next) => {
       }
     }
 
-    // Preserve existing tracking data for ALL teams including decoration teams
+    // IMPROVED: Build tracking map using properties as identifier
     const existingTrackingData = new Map();
 
     if (existingOrder.item_ids) {
       existingOrder.item_ids.forEach(item => {
         const itemKey = item.name;
         existingTrackingData.set(itemKey, {
-          glass: {},
-          caps: {},
-          boxes: {},
-          pumps: {},
-          accessories: {},
-          coating: {},
-          printing: {},
-          foiling: {},
-          frosting: {}
+          glass: new Map(),
+          caps: new Map(),
+          boxes: new Map(),
+          pumps: new Map(),
+          accessories: new Map(),
+          decorationTracking: new Map() // Map glass properties to decoration tracking
         });
 
-        ['glass', 'caps', 'boxes', 'pumps', 'accessories', 'coating', 'printing', 'foiling', 'frosting'].forEach(teamType => {
+        const itemTracking = existingTrackingData.get(itemKey);
+
+        // Store glass tracking data and create decoration mapping
+        if (item.team_assignments?.glass) {
+          item.team_assignments.glass.forEach(glassAssignment => {
+            const glassKey = `${glassAssignment.glass_name}_${glassAssignment.neck_size}_${glassAssignment.decoration}`;
+
+            itemTracking.glass.set(glassKey, {
+              team_tracking: glassAssignment.team_tracking,
+              status: glassAssignment.status,
+              glassItemId: glassAssignment._id
+            });
+
+            // Initialize decoration tracking for this glass combination
+            itemTracking.decorationTracking.set(glassKey, {
+              coating: null,
+              printing: null,
+              foiling: null,
+              frosting: null
+            });
+          });
+        }
+
+        // Map decoration team tracking to glass properties
+        ['coating', 'printing', 'foiling', 'frosting'].forEach(decorationType => {
+          if (item.team_assignments?.[decorationType]) {
+            item.team_assignments[decorationType].forEach(decorationAssignment => {
+              if (decorationAssignment.glass_item_id) {
+                // Find the glass item that this decoration belongs to
+                const relatedGlass = item.team_assignments.glass.find(g =>
+                  g._id.toString() === decorationAssignment.glass_item_id._id.toString()
+                );
+
+                if (relatedGlass) {
+                  const glassKey = `${relatedGlass.glass_name}_${relatedGlass.neck_size}_${relatedGlass.decoration}`;
+
+                  if (itemTracking.decorationTracking.has(glassKey)) {
+                    itemTracking.decorationTracking.get(glassKey)[decorationType] = {
+                      team_tracking: decorationAssignment.team_tracking,
+                      status: decorationAssignment.status
+                    };
+                  }
+                }
+              }
+            });
+          }
+        });
+
+        // Store CAP tracking data with special handling for dual tracking structure
+        if (item.team_assignments?.caps) {
+          item.team_assignments.caps.forEach(capAssignment => {
+            const capKey = `${capAssignment.cap_name}_${capAssignment.neck_size}_${capAssignment.process}`;
+            itemTracking.caps.set(capKey, {
+              metal_tracking: capAssignment.metal_tracking,
+              assembly_tracking: capAssignment.assembly_tracking,
+              status: capAssignment.status
+            });
+          });
+        }
+
+        // Store other team tracking data (boxes, pumps, accessories)
+        ['boxes', 'pumps', 'accessories'].forEach(teamType => {
           if (item.team_assignments?.[teamType]) {
             item.team_assignments[teamType].forEach(assignment => {
               const assignmentKey = getAssignmentKey(assignment, teamType);
-              existingTrackingData.get(itemKey)[teamType][assignmentKey] = {
+              itemTracking[teamType].set(assignmentKey, {
                 team_tracking: assignment.team_tracking,
                 status: assignment.status
-              };
+              });
             });
           }
         });
@@ -530,23 +608,26 @@ export const updateOrder = async (req, res, next) => {
         case 'glass':
           return `${assignment.glass_name}_${assignment.neck_size}_${assignment.decoration}`;
         case 'caps':
-          return `${assignment.cap_name}_${assignment.neck_size}_${assignment.material}`;
+          return `${assignment.cap_name}_${assignment.neck_size}_${assignment.process}`;
         case 'boxes':
           return `${assignment.box_name}_${assignment.approval_code}`;
         case 'pumps':
           return `${assignment.pump_name}_${assignment.neck_type}`;
         case 'accessories':
           return `${assignment.accessories_name}_${assignment.accessory_type}_${assignment.material}`;
-        case 'coating':
-        case 'printing':
-        case 'foiling':
-        case 'frosting':
-          // For decoration teams, use glass_item_id as the key
-          return assignment.glass_item_id?._id || assignment.glass_item_id || 'default';
         default:
           return assignment.name || 'default';
       }
     }
+
+    // Helper functions for cap process validation
+    const hasAssemblyProcess = (process) => {
+      return process && process.includes('Assembly');
+    };
+
+    const hasMetalProcess = (process) => {
+      return process && process.includes('Metal');
+    };
 
     // Update order basic info
     existingOrder.order_number = order_number || existingOrder.order_number;
@@ -554,34 +635,31 @@ export const updateOrder = async (req, res, next) => {
     existingOrder.customer_name = customer_name || existingOrder.customer_name;
     existingOrder.order_status = order_status || existingOrder.order_status;
 
-    // Delete existing OrderItems and ALL associated items (including decoration items)
+    // Delete existing OrderItems and ALL associated items
     const existingOrderItems = await OrderItem.find({ order_number: oldOrderNumber });
 
     for (const item of existingOrderItems) {
-      // Delete all team assignments
       await GlassItem.deleteMany({ itemId: item._id }, { session });
       await CapItem.deleteMany({ itemId: item._id }, { session });
       await BoxItem.deleteMany({ itemId: item._id }, { session });
       await PumpItem.deleteMany({ itemId: item._id }, { session });
       await AccessoriesItem.deleteMany({ itemId: item._id }, { session });
-      // ✅ FIX: Delete decoration items too
       await CoatingItem.deleteMany({ itemId: item._id }, { session });
       await PrintingItem.deleteMany({ itemId: item._id }, { session });
       await FoilingItem.deleteMany({ itemId: item._id }, { session });
       await FrostingItem.deleteMany({ itemId: item._id }, { session });
-
       await item.deleteOne({ session });
     }
 
     // Clear the item_ids array
     existingOrder.item_ids = [];
 
-    // Create new order items with NEW order number and preserved tracking data
+    // Create new order items with preserved tracking data
     const itemIds = [];
 
     for (const item of items) {
       const orderItem = new OrderItem({
-        order_number: existingOrder.order_number, // Use the NEW order number
+        order_number: existingOrder.order_number,
         name: item.name || `Item for ${existingOrder.order_number}`,
         team_assignments: {
           glass: [],
@@ -589,7 +667,6 @@ export const updateOrder = async (req, res, next) => {
           boxes: [],
           pumps: [],
           accessories: [],
-          // ✅ FIX: Include decoration teams in team_assignments
           coating: [],
           printing: [],
           foiling: [],
@@ -601,14 +678,19 @@ export const updateOrder = async (req, res, next) => {
       itemIds.push(orderItem._id);
 
       const existingItemTracking = existingTrackingData.get(item.name) || {
-        glass: {}, caps: {}, boxes: {}, pumps: {}, accessories: {}, coating: {}, printing: {}, foiling: {}, frosting: {}
+        glass: new Map(),
+        caps: new Map(),
+        boxes: new Map(),
+        pumps: new Map(),
+        accessories: new Map(),
+        decorationTracking: new Map()
       };
 
       // Handle Glass Items with preserved tracking
       if (item.glass && item.glass.length > 0) {
         for (const glassData of item.glass) {
-          const assignmentKey = getAssignmentKey(glassData, 'glass');
-          const existingTracking = existingItemTracking.glass[assignmentKey];
+          const glassKey = `${glassData.glass_name}_${glassData.neck_size}_${glassData.decoration}`;
+          const existingGlassTracking = existingItemTracking.glass.get(glassKey);
 
           const glassItem = new GlassItem({
             itemId: orderItem._id,
@@ -622,8 +704,8 @@ export const updateOrder = async (req, res, next) => {
             decoration_no: glassData.decoration_no,
             decoration_details: glassData.decoration_details,
             team: glassData.team || 'Glass',
-            status: existingTracking?.status || glassData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || glassData.team_tracking || {
+            status: existingGlassTracking?.status || glassData.status || 'Pending',
+            team_tracking: existingGlassTracking?.team_tracking || glassData.team_tracking || {
               total_completed_qty: 0,
               completed_entries: [],
               status: 'Pending'
@@ -631,12 +713,14 @@ export const updateOrder = async (req, res, next) => {
           });
 
           await glassItem.save({ session });
+          orderItem.team_assignments.glass.push(glassItem._id);
 
-          // ✅ FIX: Recreate decoration items with preserved tracking data
+          // Handle decoration items with preserved tracking
           const decorationKey = glassData.decoration || '';
+          const existingDecorationTracking = existingItemTracking.decorationTracking.get(glassKey);
 
           if (decorationKey.includes('coating')) {
-            const existingCoatingTracking = existingItemTracking.coating[glassItem._id];
+            const existingCoatingTracking = existingDecorationTracking?.coating;
             const coatingItem = await CoatingItem.create([{
               glass_item_id: glassItem._id,
               itemId: orderItem._id,
@@ -653,7 +737,7 @@ export const updateOrder = async (req, res, next) => {
           }
 
           if (decorationKey.includes('printing')) {
-            const existingPrintingTracking = existingItemTracking.printing[glassItem._id];
+            const existingPrintingTracking = existingDecorationTracking?.printing;
             const printingItem = await PrintingItem.create([{
               glass_item_id: glassItem._id,
               itemId: orderItem._id,
@@ -670,7 +754,7 @@ export const updateOrder = async (req, res, next) => {
           }
 
           if (decorationKey.includes('foiling')) {
-            const existingFoilingTracking = existingItemTracking.foiling[glassItem._id];
+            const existingFoilingTracking = existingDecorationTracking?.foiling;
             const foilingItem = await FoilingItem.create([{
               glass_item_id: glassItem._id,
               itemId: orderItem._id,
@@ -687,7 +771,7 @@ export const updateOrder = async (req, res, next) => {
           }
 
           if (decorationKey.includes('frosting')) {
-            const existingFrostingTracking = existingItemTracking.frosting[glassItem._id];
+            const existingFrostingTracking = existingDecorationTracking?.frosting;
             const frostingItem = await FrostingItem.create([{
               glass_item_id: glassItem._id,
               itemId: orderItem._id,
@@ -702,16 +786,31 @@ export const updateOrder = async (req, res, next) => {
             }], { session });
             orderItem.team_assignments.frosting.push(frostingItem[0]._id);
           }
-
-          orderItem.team_assignments.glass.push(glassItem._id);
         }
       }
 
-      // Handle Cap Items with preserved tracking
+      // Handle Cap Items with preserved DUAL tracking (metal_tracking + assembly_tracking)
       if (item.caps && item.caps.length > 0) {
         for (const capData of item.caps) {
-          const assignmentKey = getAssignmentKey(capData, 'caps');
-          const existingTracking = existingItemTracking.caps[assignmentKey];
+          const capKey = `${capData.cap_name}_${capData.neck_size}_${capData.process}`;
+          const existingCapTracking = existingItemTracking.caps.get(capKey);
+
+          // Initialize default tracking structures
+          const defaultMetalTracking = {
+            total_completed_qty: 0,
+            completed_entries: [],
+            status: 'Pending'
+          };
+
+          const defaultAssemblyTracking = {
+            total_completed_qty: 0,
+            completed_entries: [],
+            status: 'Pending'
+          };
+
+          // Determine which tracking fields should exist based on process
+          const hasMetal = hasMetalProcess(capData.process);
+          const hasAssembly = hasAssemblyProcess(capData.process);
 
           const capItem = new CapItem({
             itemId: orderItem._id,
@@ -723,12 +822,10 @@ export const updateOrder = async (req, res, next) => {
             process: capData.process,
             material: capData.material,
             team: capData.team || 'Caps',
-            status: existingTracking?.status || capData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || capData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
+            status: existingCapTracking?.status || capData.status || 'Pending',
+            // Preserve existing tracking data or use defaults
+            metal_tracking: hasMetal ? (existingCapTracking?.metal_tracking || capData.metal_tracking || defaultMetalTracking) : undefined,
+            assembly_tracking: hasAssembly ? (existingCapTracking?.assembly_tracking || capData.assembly_tracking || defaultAssemblyTracking) : undefined
           });
 
           await capItem.save({ session });
@@ -736,11 +833,11 @@ export const updateOrder = async (req, res, next) => {
         }
       }
 
-      // Handle Box Items with preserved tracking
+      // Handle other team items (boxes, pumps, accessories) with standard team_tracking
       if (item.boxes && item.boxes.length > 0) {
         for (const boxData of item.boxes) {
           const assignmentKey = getAssignmentKey(boxData, 'boxes');
-          const existingTracking = existingItemTracking.boxes[assignmentKey];
+          const existingTracking = existingItemTracking.boxes.get(assignmentKey);
 
           const boxItem = new BoxItem({
             itemId: orderItem._id,
@@ -763,11 +860,10 @@ export const updateOrder = async (req, res, next) => {
         }
       }
 
-      // Handle Pump Items with preserved tracking
       if (item.pumps && item.pumps.length > 0) {
         for (const pumpData of item.pumps) {
           const assignmentKey = getAssignmentKey(pumpData, 'pumps');
-          const existingTracking = existingItemTracking.pumps[assignmentKey];
+          const existingTracking = existingItemTracking.pumps.get(assignmentKey);
 
           const pumpItem = new PumpItem({
             itemId: orderItem._id,
@@ -790,11 +886,10 @@ export const updateOrder = async (req, res, next) => {
         }
       }
 
-      // Handle Accessories Items with preserved tracking
       if (item.accessories && item.accessories.length > 0) {
         for (const accessoryData of item.accessories) {
           const assignmentKey = getAssignmentKey(accessoryData, 'accessories');
-          const existingTracking = existingItemTracking.accessories[assignmentKey];
+          const existingTracking = existingItemTracking.accessories.get(assignmentKey);
 
           const accessoryItem = new AccessoriesItem({
             itemId: orderItem._id,
@@ -828,7 +923,7 @@ export const updateOrder = async (req, res, next) => {
     await session.commitTransaction();
     session.endSession();
 
-    // ✅ FIX: Fetch the fully populated updated order with ALL team assignments
+    // Fetch the fully populated updated order
     const populatedOrder = await Order.findById(existingOrder._id)
       .populate({
         path: 'item_ids',
@@ -876,6 +971,7 @@ export const updateOrder = async (req, res, next) => {
     next(error);
   }
 };
+
 
 export const getOrderById = async (req, res, next) => {
   try {

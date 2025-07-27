@@ -1,7 +1,9 @@
+import { updateOrderCompletionStatus } from '../helpers/ordercompletion.js';
 import Order from '../models/Order.js';
 import OrderItem from '../models/OrderItem.js';
 import PrintingItem from '../models/PrintingItem.js';
 import mongoose from 'mongoose';
+
 
 // Decoration sequences - must match your socket logic
 const DECORATION_SEQUENCES = {
@@ -387,124 +389,8 @@ export const updatePrintingTracking = async (req, res, next) => {
         console.log('✅ Successfully updated assignment:', assignment._id.toString());
       }
 
-      // ✅ FIXED: Better completion checking with error handling
-      try {
-        const itemCompletionResult = await OrderItem.aggregate([
-          { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-          {
-            $lookup: {
-              from: 'printingitems',
-              localField: 'team_assignments.printing',
-              foreignField: '_id',
-              as: 'printing_assignments'
-            }
-          },
-          {
-            $addFields: {
-              allPrintingCompleted: {
-                $cond: {
-                  if: { $gt: [{ $size: '$printing_assignments' }, 0] },
-                  then: {
-                    $allElementsTrue: {
-                      $map: {
-                        input: '$printing_assignments',
-                        as: 'assignment',
-                        in: {
-                          $gte: [
-                            { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                            '$$assignment.quantity'
-                          ]
-                        }
-                      }
-                    }
-                  },
-                  else: false
-                }
-              }
-            }
-          },
-          { $project: { allPrintingCompleted: 1 } }
-        ]).session(session);
-
-        if (itemCompletionResult[0]?.allPrintingCompleted) {
-          await OrderItem.findByIdAndUpdate(
-            itemId,
-            { $set: { 'team_status.printing': 'Completed' } },
-            { session }
-          );
-
-          console.log('✅ Item printing completed');
-
-          // ✅ FIXED: Check if entire order is completed
-          const orderCompletionResult = await Order.aggregate([
-            { $match: { order_number: orderNumber } },
-            {
-              $lookup: {
-                from: 'orderitems',
-                localField: 'item_ids',
-                foreignField: '_id',
-                as: 'items',
-                pipeline: [
-                  {
-                    $lookup: {
-                      from: 'printingitems',
-                      localField: 'team_assignments.printing',
-                      foreignField: '_id',
-                      as: 'printing_assignments'
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              $addFields: {
-                allItemsCompleted: {
-                  $allElementsTrue: {
-                    $map: {
-                      input: '$items',
-                      as: 'item',
-                      in: {
-                        $cond: {
-                          if: { $gt: [{ $size: '$$item.printing_assignments' }, 0] },
-                          then: {
-                            $allElementsTrue: {
-                              $map: {
-                                input: '$$item.printing_assignments',
-                                as: 'assignment',
-                                in: {
-                                  $gte: [
-                                    { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                    '$$assignment.quantity'
-                                  ]
-                                }
-                              }
-                            }
-                          },
-                          else: true
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            { $project: { allItemsCompleted: 1, order_status: 1 } }
-          ]).session(session);
-
-          const orderResult = orderCompletionResult[0];
-          if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-            await Order.findOneAndUpdate(
-              { order_number: orderNumber },
-              { $set: { order_status: 'Completed' } },
-              { session }
-            );
-            console.log('✅ Order completed');
-          }
-        }
-      } catch (completionError) {
-        console.error('❌ Error checking completion status:', completionError);
-        // Don't throw here, just log - the update was successful
-      }
+      // ✅ SIMPLE FIX: Replace all the complex aggregation logic with one line!
+      await updateOrderCompletionStatus(orderNumber, itemId, 'printing', session);
     });
 
     // ✅ CRITICAL FIX: Fetch full order with ALL team assignments for decoration sequence

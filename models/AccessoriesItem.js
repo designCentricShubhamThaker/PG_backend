@@ -8,7 +8,11 @@ const AccessoriesItemSchema = new mongoose.Schema({
    rate: { type: Number, default: 0 },
   quantity: Number,
   team: String,
-  status: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' },
+ status: {
+    type: String,
+    enum: ['Pending', 'In Progress', 'Completed'],
+    default: 'Pending'
+  },
   team_tracking: teamTrackingSchema
 }, { timestamps: true });
 

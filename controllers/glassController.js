@@ -1,8 +1,8 @@
 import Order from '../models/Order.js';
-import OrderItem from '../models/OrderItem.js'; // Add this import
+import OrderItem from '../models/OrderItem.js';
 import GlassItem from '../models/GlassItem.js';
 import mongoose from 'mongoose';
-
+import { updateOrderCompletionStatus } from '../helpers/ordercompletion.js';
 
 
 export const getGlassOrders = async (req, res, next) => {
@@ -27,7 +27,6 @@ export const getGlassOrders = async (req, res, next) => {
           { path: 'team_assignments.frosting', model: 'FrostingItem' }
         ]
       })
-
       .lean();
 
     const filteredOrders = orders
@@ -132,110 +131,8 @@ export const updateGlassTracking = async (req, res, next) => {
         );
       }
 
-      // Check if all glass items for this item are completed
-      const itemCompletionResult = await OrderItem.aggregate([
-        { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-        {
-          $lookup: {
-            from: 'glassitems',
-            localField: 'team_assignments.glass',
-            foreignField: '_id',
-            as: 'glass_assignments'
-          }
-        },
-        {
-          $addFields: {
-            allGlassCompleted: {
-              $allElementsTrue: {
-                $map: {
-                  input: '$glass_assignments',
-                  as: 'assignment',
-                  in: {
-                    $gte: [
-                      { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                      '$$assignment.quantity'
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        { $project: { allGlassCompleted: 1 } }
-      ]).session(session);
-
-      if (itemCompletionResult[0]?.allGlassCompleted) {
-        await OrderItem.findByIdAndUpdate(
-          itemId,
-          { $set: { 'team_status.glass': 'Completed' } },
-          { session }
-        );
-
-        // Now check if all items in the order are complete
-        const orderCompletionResult = await Order.aggregate([
-          { $match: { order_number: orderNumber } },
-          {
-            $lookup: {
-              from: 'orderitems',
-              localField: 'item_ids',
-              foreignField: '_id',
-              as: 'items',
-              pipeline: [
-                {
-                  $lookup: {
-                    from: 'glassitems',
-                    localField: 'team_assignments.glass',
-                    foreignField: '_id',
-                    as: 'glass_assignments'
-                  }
-                }
-              ]
-            }
-          },
-          {
-            $addFields: {
-              allItemsCompleted: {
-                $allElementsTrue: {
-                  $map: {
-                    input: '$items',
-                    as: 'item',
-                    in: {
-                      $cond: {
-                        if: { $gt: [{ $size: '$$item.glass_assignments' }, 0] },
-                        then: {
-                          $allElementsTrue: {
-                            $map: {
-                              input: '$$item.glass_assignments',
-                              as: 'assignment',
-                              in: {
-                                $gte: [
-                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                  '$$assignment.quantity'
-                                ]
-                              }
-                            }
-                          }
-                        },
-                        else: true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          { $project: { allItemsCompleted: 1, order_status: 1 } }
-        ]).session(session);
-
-        const orderResult = orderCompletionResult[0];
-        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-          await Order.findOneAndUpdate(
-            { order_number: orderNumber },
-            { $set: { order_status: 'Completed' } },
-            { session }
-          );
-        }
-      }
+      // ✅ SIMPLE FIX: Replace all the complex aggregation logic with one line!
+      await updateOrderCompletionStatus(orderNumber, itemId, 'glass', session);
     });
 
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
@@ -251,7 +148,6 @@ export const updateGlassTracking = async (req, res, next) => {
       })
       .lean();
 
-
     const updatedAssignments = updatesArray.map(update => ({
       assignmentId: update.assignmentId,
       newStatus: update.newStatus,
@@ -262,7 +158,7 @@ export const updateGlassTracking = async (req, res, next) => {
       success: true,
       message: 'Glass tracking updated successfully',
       data: {
-        order: updatedOrder, // ✅ Send full order (with all team assignments!)
+        order: updatedOrder,
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
@@ -276,4 +172,3 @@ export const updateGlassTracking = async (req, res, next) => {
     await session.endSession();
   }
 };
-

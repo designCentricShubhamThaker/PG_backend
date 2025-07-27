@@ -1,11 +1,10 @@
-
-
 import Order from '../models/Order.js';
 import OrderItem from '../models/OrderItem.js';
 import BoxItem from '../models/BoxItem.js';
 import mongoose from 'mongoose';
+import { updateOrderCompletionStatus } from '../helpers/ordercompletion.js';
 
-// Get Orders with Box Assignments
+
 export const getBoxOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
@@ -116,109 +115,8 @@ export const updateBoxTracking = async (req, res, next) => {
         );
       }
 
-      // Check item completion
-      const itemCompletionResult = await OrderItem.aggregate([
-        { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-        {
-          $lookup: {
-            from: 'boxitems',
-            localField: 'team_assignments.boxes',
-            foreignField: '_id',
-            as: 'box_assignments'
-          }
-        },
-        {
-          $addFields: {
-            allBoxesCompleted: {
-              $allElementsTrue: {
-                $map: {
-                  input: '$box_assignments',
-                  as: 'assignment',
-                  in: {
-                    $gte: [
-                      { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                      '$$assignment.quantity'
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        { $project: { allBoxesCompleted: 1 } }
-      ]).session(session);
-
-      if (itemCompletionResult[0]?.allBoxesCompleted) {
-        await OrderItem.findByIdAndUpdate(
-          itemId,
-          { $set: { 'team_status.boxes': 'Completed' } },
-          { session }
-        );
-
-        const orderCompletionResult = await Order.aggregate([
-          { $match: { order_number: orderNumber } },
-          {
-            $lookup: {
-              from: 'orderitems',
-              localField: 'item_ids',
-              foreignField: '_id',
-              as: 'items',
-              pipeline: [
-                {
-                  $lookup: {
-                    from: 'boxitems',
-                    localField: 'team_assignments.boxes',
-                    foreignField: '_id',
-                    as: 'box_assignments'
-                  }
-                }
-              ]
-            }
-          },
-          {
-            $addFields: {
-              allItemsCompleted: {
-                $allElementsTrue: {
-                  $map: {
-                    input: '$items',
-                    as: 'item',
-                    in: {
-                      $cond: {
-                        if: { $gt: [{ $size: '$$item.box_assignments' }, 0] },
-                        then: {
-                          $allElementsTrue: {
-                            $map: {
-                              input: '$$item.box_assignments',
-                              as: 'assignment',
-                              in: {
-                                $gte: [
-                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                  '$$assignment.quantity'
-                                ]
-                              }
-                            }
-                          }
-                        },
-                        else: true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          { $project: { allItemsCompleted: 1, order_status: 1 } }
-        ]).session(session);
-
-        const orderResult = orderCompletionResult[0];
-        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-          await Order.findOneAndUpdate(
-            { order_number: orderNumber },
-            { $set: { order_status: 'Completed' } },
-            { session }
-          );
-        }
-      }
+      // ✅ SIMPLE FIX: Replace all the complex aggregation logic with one line!
+      await updateOrderCompletionStatus(orderNumber, itemId, 'boxes', session);
     });
 
     const updatedOrder = await Order.findOne({ order_number: orderNumber })

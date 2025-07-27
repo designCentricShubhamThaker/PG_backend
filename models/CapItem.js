@@ -20,7 +20,11 @@ const CapItemSchema = new mongoose.Schema({
   },
 
   team: String,
-  status: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' },
+  status: {
+    type: String,
+    enum: ['Pending', 'In Progress', 'Completed'],
+    default: 'Pending'
+  },
 
   metal_tracking: teamTrackingSchema,
   assembly_tracking: teamTrackingSchema

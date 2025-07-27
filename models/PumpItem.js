@@ -9,7 +9,11 @@ const PumpItemSchema = new mongoose.Schema({
   neck_type: String,
   quantity: Number,
   team: String,
-  status: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' },
+ status: {
+    type: String,
+    enum: ['Pending', 'In Progress', 'Completed'],
+    default: 'Pending'
+  },
   team_tracking: teamTrackingSchema
 }, { timestamps: true });
 

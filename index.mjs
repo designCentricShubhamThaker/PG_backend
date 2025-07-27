@@ -115,7 +115,7 @@ io.on('connection', (socket) => {
       orderData: order
     });
 
-    const normalTeams = ['glass', 'caps', 'boxes', 'pumps','accessories'];
+    const normalTeams = ['glass', 'caps', 'boxes', 'pumps', 'accessories'];
     assignedTeams.forEach(teamName => {
       if (normalTeams.includes(teamName) && teamMembers[teamName]?.size > 0) {
         const teamOrder = getTeamOrder(order, teamName);
@@ -132,147 +132,217 @@ io.on('connection', (socket) => {
 
     console.log('📋 Decoration teams will receive orders based on glass completion sequence');
   });
-socket.on('team-progress-updated', (progressData) => {
-  console.log('📈 Team progress updated:', progressData.orderNumber, progressData.team);
-  console.log('📊 Progress data received:', {
-    team: progressData.team,
-    targetGlassItem: progressData.targetGlassItem,
-    updatesCount: progressData.updates?.length || 0
-  });
-
-  const { orderNumber, team, updatedOrder, customerName, dispatcherName, timestamp, targetGlassItem } = progressData;
-
-  let processedOrder = updatedOrder;
-  if (typeof updatedOrder === 'string') {
-    processedOrder = JSON.parse(updatedOrder);
-  }
-
-  const notificationData = {
-    type: 'team-progress-update',
-    orderNumber,
-    team: team.toUpperCase(),
-    customerName,
-    dispatcherName,
-    timestamp,
-    targetGlassItem,
-    message: `${team.toUpperCase()} team updated progress for order #${orderNumber}`
-  };
-
-  io.to('dispatchers').emit('team-progress-updated', {
-    ...notificationData,
-    orderData: processedOrder
-  });
-
-  socket.broadcast.emit('team-progress-updated', notificationData);
-
-  if (team.toLowerCase() === 'glass') {
-    console.log('🔍 Glass team completed - checking decoration sequences');
-    checkDecorationSequences(processedOrder, orderNumber, customerName, dispatcherName);
-  }
-  
-  if (['printing', 'coating', 'foiling', 'frosting'].includes(team.toLowerCase())) {
-    console.log(`🔍 ${team} team completed - checking next decoration team`);
-    
-    // FIX: Check all glass items that might need the next decoration step
-    checkAllNextDecorationTeams(processedOrder, orderNumber, customerName, dispatcherName, team.toLowerCase());
-  }
-});
-
-// NEW FUNCTION: Check next decoration team for all applicable glass items
-function checkAllNextDecorationTeams(order, orderNumber, customerName, dispatcherName, completedTeam) {
-  console.log(`🔍 Checking next decoration teams for all glass items after ${completedTeam} completion`);
-  
-  // Get all glass items that have the completed team in their decoration sequence
-  const glassItemsToCheck = [];
-  
-  order.item_ids.forEach(item => {
-    const glassAssignments = item.team_assignments?.glass || [];
-    
-    glassAssignments.forEach(glass => {
-      const decorationType = glass.decoration_details?.type || glass.decoration;
-      
-      if (decorationType && DECORATION_SEQUENCES[decorationType]) {
-        const sequence = DECORATION_SEQUENCES[decorationType];
-        
-        // If this glass item's sequence includes the completed team
-        if (sequence.includes(completedTeam)) {
-          glassItemsToCheck.push({
-            id: glass._id,
-            name: glass.glass_name,
-            decorationType,
-            sequence
-          });
-        }
-      }
+  socket.on('team-progress-updated', (progressData) => {
+    console.log('📈 Team progress updated:', progressData.orderNumber, progressData.team);
+    console.log('📊 Progress data received:', {
+      team: progressData.team,
+      targetGlassItem: progressData.targetGlassItem,
+      updatesCount: progressData.updates?.length || 0
     });
-  });
-  
-  console.log(`🎯 Found ${glassItemsToCheck.length} glass items to check for next decoration step`);
-  
-  // Check each glass item
-  glassItemsToCheck.forEach(glassInfo => {
-    const { id, name, sequence } = glassInfo;
-    const currentIndex = sequence.indexOf(completedTeam);
-    const nextTeam = sequence[currentIndex + 1];
-    
-    console.log(`📋 Glass ${name} (${id}): ${sequence.join(' → ')}`);
-    console.log(`📍 Current team: ${completedTeam} (index: ${currentIndex})`);
-    console.log(`🎯 Next team: ${nextTeam || 'None - sequence complete'}`);
-    
-    if (nextTeam) {
-      const isCurrentTeamCompleted = checkTeamCompletionForGlassItem(order, completedTeam, id);
-      if (isCurrentTeamCompleted) {
-        console.log(`✅ ${completedTeam} completed for glass ${name}, sending to ${nextTeam}`);
-        sendToDecorationTeam(order, orderNumber, customerName, dispatcherName, nextTeam, id);
-      } else {
-        console.log(`⏳ ${completedTeam} not yet completed for glass ${name}`);
-      }
-    } else {
-      console.log(`🎉 All decoration steps completed for glass ${name}`);
+
+    const { orderNumber, team, updatedOrder, customerName, dispatcherName, timestamp, targetGlassItem } = progressData;
+
+    let processedOrder = updatedOrder;
+    if (typeof updatedOrder === 'string') {
+      processedOrder = JSON.parse(updatedOrder);
     }
-  });
-}
 
-  socket.on('order-edited', (editData) => {
-    console.log('✏️ Order edited:', editData.orderNumber);
-
-    const { order, assignedTeams, dispatcherName, customerName, orderNumber, timestamp, editedFields, previousAssignedTeams = [] } = editData;
-
-    const baseNotification = {
-      type: 'order-edited',
+    const notificationData = {
+      type: 'team-progress-update',
       orderNumber,
+      team: team.toUpperCase(),
       customerName,
       dispatcherName,
       timestamp,
-      editedFields,
-      message: `Order #${orderNumber} has been updated`
+      targetGlassItem,
+      message: `${team.toUpperCase()} team updated progress for order #${orderNumber}`
     };
 
-    // Send to dispatchers
-    io.to('dispatchers').emit('order-updated', {
-      ...baseNotification,
-      orderData: order
+    io.to('dispatchers').emit('team-progress-updated', {
+      ...notificationData,
+      orderData: processedOrder
     });
 
-    // Send to affected teams
-    const allAffectedTeams = new Set([...assignedTeams, ...previousAssignedTeams]);
-    allAffectedTeams.forEach(teamName => {
-      if (teamMembers[teamName]?.size > 0) {
-        const teamOrder = getTeamOrder(order, teamName);
-        const hasCurrentAssignments = assignedTeams.includes(teamName);
+    socket.broadcast.emit('team-progress-updated', notificationData);
 
-        io.to(teamName).emit('order-updated', {
-          ...baseNotification,
-          message: hasCurrentAssignments
-            ? `Order #${orderNumber} assigned to ${teamName.toUpperCase()} team has been updated`
-            : `Order #${orderNumber} no longer assigned to ${teamName.toUpperCase()} team`,
-          orderData: teamOrder,
-          hasAssignments: hasCurrentAssignments,
-          wasRemoved: !hasCurrentAssignments && previousAssignedTeams.includes(teamName)
-        });
+    if (team.toLowerCase() === 'glass') {
+      console.log('🔍 Glass team completed - checking decoration sequences');
+      checkDecorationSequences(processedOrder, orderNumber, customerName, dispatcherName);
+    }
+
+    if (['printing', 'coating', 'foiling', 'frosting'].includes(team.toLowerCase())) {
+      console.log(`🔍 ${team} team completed - checking next decoration team`);
+
+      // FIX: Check all glass items that might need the next decoration step
+      checkAllNextDecorationTeams(processedOrder, orderNumber, customerName, dispatcherName, team.toLowerCase());
+    }
+  });
+
+  // NEW FUNCTION: Check next decoration team for all applicable glass items
+  function checkAllNextDecorationTeams(order, orderNumber, customerName, dispatcherName, completedTeam) {
+    console.log(`🔍 Checking next decoration teams for all glass items after ${completedTeam} completion`);
+
+    // Get all glass items that have the completed team in their decoration sequence
+    const glassItemsToCheck = [];
+
+    order.item_ids.forEach(item => {
+      const glassAssignments = item.team_assignments?.glass || [];
+
+      glassAssignments.forEach(glass => {
+        const decorationType = glass.decoration_details?.type || glass.decoration;
+
+        if (decorationType && DECORATION_SEQUENCES[decorationType]) {
+          const sequence = DECORATION_SEQUENCES[decorationType];
+
+          // If this glass item's sequence includes the completed team
+          if (sequence.includes(completedTeam)) {
+            glassItemsToCheck.push({
+              id: glass._id,
+              name: glass.glass_name,
+              decorationType,
+              sequence
+            });
+          }
+        }
+      });
+    });
+
+    console.log(`🎯 Found ${glassItemsToCheck.length} glass items to check for next decoration step`);
+
+    // Check each glass item
+    glassItemsToCheck.forEach(glassInfo => {
+      const { id, name, sequence } = glassInfo;
+      const currentIndex = sequence.indexOf(completedTeam);
+      const nextTeam = sequence[currentIndex + 1];
+
+      console.log(`📋 Glass ${name} (${id}): ${sequence.join(' → ')}`);
+      console.log(`📍 Current team: ${completedTeam} (index: ${currentIndex})`);
+      console.log(`🎯 Next team: ${nextTeam || 'None - sequence complete'}`);
+
+      if (nextTeam) {
+        const isCurrentTeamCompleted = checkTeamCompletionForGlassItem(order, completedTeam, id);
+        if (isCurrentTeamCompleted) {
+          console.log(`✅ ${completedTeam} completed for glass ${name}, sending to ${nextTeam}`);
+          sendToDecorationTeam(order, orderNumber, customerName, dispatcherName, nextTeam, id);
+        } else {
+          console.log(`⏳ ${completedTeam} not yet completed for glass ${name}`);
+        }
+      } else {
+        console.log(`🎉 All decoration steps completed for glass ${name}`);
       }
     });
-  });
+  }
+
+ socket.on('order-edited', (editData) => {
+    console.log('✏️ Order edited:', editData.orderNumber);
+
+    const {
+        order,
+        assignedTeams,
+        dispatcherName,
+        customerName,
+        orderNumber,
+        timestamp,
+        editedFields,
+        previousAssignedTeams = []
+    } = editData;
+
+    // Check if this is a decoration-related edit or quantity change that requires database refetch
+    const isDecorationEdit = editedFields?.some(field => 
+        field.includes('decoration') || 
+        field.includes('glass') || 
+        field.includes('team_assignments') ||
+        field.includes('quantity') // Add quantity changes
+    );
+
+    // Check if any glass items were completed (have tracking data) or any decoration teams have progress
+    const hasCompletedGlassItems = order.item_ids?.some(item => 
+        item.team_assignments?.glass?.some(glass => 
+            glass.team_tracking?.total_completed_qty > 0
+        )
+    );
+
+    const hasDecorationProgress = order.item_ids?.some(item => 
+        ['printing', 'coating', 'foiling', 'frosting'].some(team => 
+            item.team_assignments?.[team]?.some(assignment => 
+                assignment.team_tracking?.total_completed_qty > 0
+            )
+        )
+    );
+
+    // Refetch from DB if decoration/quantity edit and any progress exists
+    const shouldRefetchFromDB = isDecorationEdit && (hasCompletedGlassItems || hasDecorationProgress);
+
+    console.log('🔍 Edit analysis:', {
+        isDecorationEdit,
+        hasCompletedGlassItems,
+        hasDecorationProgress,
+        shouldRefetchFromDB,
+        editedFields
+    });
+
+    const baseNotification = {
+        type: 'order-edited',
+        orderNumber,
+        customerName,
+        dispatcherName,
+        timestamp,
+        editedFields,
+        shouldRefetchFromDB, // Add flag to notification
+        message: `Order #${orderNumber} has been updated`
+    };
+
+    // Notify dispatchers
+    io.to('dispatchers').emit('order-updated', {
+        ...baseNotification,
+        orderData: order
+    });
+
+    // Handle decoration teams specially if refetch is needed
+    const decorationTeams = ['printing', 'coating', 'foiling', 'frosting'];
+    const normalTeams = ['glass', 'caps', 'boxes', 'pumps', 'accessories'];
+    
+    const allAffectedTeams = new Set([...assignedTeams, ...previousAssignedTeams]);
+    
+    allAffectedTeams.forEach(teamName => {
+        if (teamMembers[teamName]?.size > 0) {
+            const teamOrder = getTeamOrder(order, teamName);
+            const hasCurrentAssignments = assignedTeams.includes(teamName);
+            const wasPreviouslyAssigned = previousAssignedTeams.includes(teamName);
+
+            const message = hasCurrentAssignments
+                ? `Order #${orderNumber} assigned to ${teamName.toUpperCase()} team has been updated`
+                : `Order #${orderNumber} no longer assigned to ${teamName.toUpperCase()} team`;
+
+            // For decoration teams or glass team with quantity changes, include the refetch flag
+            const notification = {
+                ...baseNotification,
+                message,
+                orderData: teamOrder,
+                hasAssignments: hasCurrentAssignments,
+                wasRemoved: !hasCurrentAssignments && wasPreviouslyAssigned
+            };
+
+            // Add special flag for decoration teams or glass team when quantities change
+            if ((decorationTeams.includes(teamName) || teamName === 'glass') && shouldRefetchFromDB) {
+                notification.shouldRefetchFromDB = true;
+                console.log(`🔄 [${teamName.toUpperCase()}] will refetch from database due to quantity/decoration changes`);
+            }
+
+            io.to(teamName).emit('order-updated', notification);
+
+            // Log team-level status
+            if (hasCurrentAssignments) {
+                console.log(`✅ [${teamName.toUpperCase()}] received updated order #${orderNumber}${shouldRefetchFromDB && (decorationTeams.includes(teamName) || teamName === 'glass') ? ' (will refetch)' : ''}`);
+            } else if (wasPreviouslyAssigned) {
+                console.log(`❌ [${teamName.toUpperCase()}] was unassigned from order #${orderNumber}`);
+            }
+        } else {
+            console.log(`⚠️ No connected members in [${teamName.toUpperCase()}] to receive order #${orderNumber}`);
+        }
+    });
+});
+
 
   socket.on('order-deleted', (deleteData) => {
     console.log('🗑️ Order deleted:', deleteData.orderNumber);
@@ -348,9 +418,9 @@ function checkAllNextDecorationTeams(order, orderNumber, customerName, dispatche
 
 
   function addUserToTeams(socket, userInfo) {
-    const { role, team   } = userInfo;
+    const { role, team } = userInfo;
 
-    if (role === 'admin' || role === 'dispatcher' || team === "marketing" ) {
+    if (role === 'admin' || role === 'dispatcher' || team === "marketing") {
       teamMembers.dispatchers.add(socket.id);
       socket.join('dispatchers');
     }
@@ -377,7 +447,7 @@ function checkAllNextDecorationTeams(order, orderNumber, customerName, dispatche
     const teamLists = {};
     const allTeamMembers = [];
 
-    ['glass', 'caps', 'boxes', 'pumps', 'accessories' , 'printing', 'coating', 'foiling', 'frosting'].forEach(teamName => {
+    ['glass', 'caps', 'boxes', 'pumps', 'accessories', 'printing', 'coating', 'foiling', 'frosting'].forEach(teamName => {
       const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
         const user = connectedUsers.get(socketId);
         return {
@@ -642,5 +712,4 @@ const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
 

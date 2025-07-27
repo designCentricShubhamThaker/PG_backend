@@ -2,17 +2,59 @@ import Order from '../models/Order.js';
 import PumpItem from '../models/PumpItem.js';
 import OrderItem from '../models/OrderItem.js';
 import mongoose from 'mongoose';
+import { updateOrderCompletionStatus } from '../helpers/ordercompletion.js';
 
-// Get all pump items
 export const getAllPumpItems = async (req, res, next) => {
   try {
-    const pumpItems = await PumpItem.find().sort({ createdAt: -1 });
-    res.status(200).json({ success: true, data: pumpItems });
+    const { orderType } = req.query;
+    const filter = {};
+
+    if (orderType === 'pending') {
+      filter.order_status = 'Pending';
+    } else if (orderType === 'completed') {
+      filter.order_status = 'Completed';
+    }
+
+    const orders = await Order.find(filter)
+      .populate({
+        path: 'item_ids',
+        populate: {
+          path: 'team_assignments.pumps',
+          model: 'PumpItem'
+        }
+      })
+      .lean();
+
+    const filteredOrders = orders
+      .filter(order =>
+        order.item_ids.some(item => item.team_assignments?.pumps?.length > 0)
+      )
+      .map(order => {
+        const filteredItems = order.item_ids
+          .filter(item => item.team_assignments?.pumps?.length > 0)
+          .map(item => {
+            const pumpItems = item.team_assignments.pumps;
+            return {
+              ...item,
+              team_assignments: { pumps: pumpItems }
+            };
+          });
+
+        return {
+          ...order,
+          item_ids: filteredItems
+        };
+      });
+
+    res.status(200).json({
+      success: true,
+      count: filteredOrders.length,
+      data: filteredOrders
+    });
   } catch (error) {
     next(error);
   }
 };
-
 
 export const updatePumpTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -71,129 +113,19 @@ export const updatePumpTracking = async (req, res, next) => {
         );
       }
 
-      // Check item completion
-      const itemCompletionResult = await OrderItem.aggregate([
-        { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-        {
-          $lookup: {
-            from: 'pumpitems',
-            localField: 'team_assignments.pumps',
-            foreignField: '_id',
-            as: 'pump_assignments'
-          }
-        },
-        {
-          $addFields: {
-            allPumpsCompleted: {
-              $allElementsTrue: {
-                $map: {
-                  input: '$pump_assignments',
-                  as: 'assignment',
-                  in: {
-                    $gte: [
-                      { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                      '$$assignment.quantity'
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        { $project: { allPumpsCompleted: 1 } }
-      ]).session(session);
-
-      if (itemCompletionResult[0]?.allPumpsCompleted) {
-        await OrderItem.findByIdAndUpdate(
-          itemId,
-          { $set: { 'team_status.pumps': 'Completed' } },
-          { session }
-        );
-
-        const orderCompletionResult = await Order.aggregate([
-          { $match: { order_number: orderNumber } },
-          {
-            $lookup: {
-              from: 'orderitems',
-              localField: 'item_ids',
-              foreignField: '_id',
-              as: 'items',
-              pipeline: [
-                {
-                  $lookup: {
-                    from: 'pumpitems',
-                    localField: 'team_assignments.pumps',
-                    foreignField: '_id',
-                    as: 'pump_assignments'
-                  }
-                }
-              ]
-            }
-          },
-          {
-            $addFields: {
-              allItemsCompleted: {
-                $allElementsTrue: {
-                  $map: {
-                    input: '$items',
-                    as: 'item',
-                    in: {
-                      $cond: {
-                        if: { $gt: [{ $size: '$$item.pump_assignments' }, 0] },
-                        then: {
-                          $allElementsTrue: {
-                            $map: {
-                              input: '$$item.pump_assignments',
-                              as: 'assignment',
-                              in: {
-                                $gte: [
-                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                  '$$assignment.quantity'
-                                ]
-                              }
-                            }
-                          }
-                        },
-                        else: true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          { $project: { allItemsCompleted: 1, order_status: 1 } }
-        ]).session(session);
-
-        const orderResult = orderCompletionResult[0];
-        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-          await Order.findOneAndUpdate(
-            { order_number: orderNumber },
-            { $set: { order_status: 'Completed' } },
-            { session }
-          );
-        }
-      }
+      // ✅ SIMPLE FIX: Replace all the complex aggregation logic with one line!
+      await updateOrderCompletionStatus(orderNumber, itemId, 'pumps', session);
     });
 
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.pumps': { $exists: true, $ne: [] } },
         populate: {
           path: 'team_assignments.pumps',
           model: 'PumpItem'
         }
       })
       .lean();
-
-    const responseData = {
-      ...updatedOrder,
-      item_ids: updatedOrder.item_ids.map(item => ({
-        ...item,
-        team_assignments: { pumps: item.team_assignments.pumps }
-      }))
-    };
 
     const updatedAssignments = updatesArray.map(update => ({
       assignmentId: update.assignmentId,
@@ -205,7 +137,7 @@ export const updatePumpTracking = async (req, res, next) => {
       success: true,
       message: 'Pump tracking updated successfully',
       data: {
-        order: responseData,
+        order: updatedOrder,
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
@@ -219,4 +151,3 @@ export const updatePumpTracking = async (req, res, next) => {
     await session.endSession();
   }
 };
-;

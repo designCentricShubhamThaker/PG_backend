@@ -2,6 +2,7 @@ import Order from '../models/Order.js';
 import CapItem from '../models/CapItem.js';
 import OrderItem from '../models/OrderItem.js';
 import mongoose from 'mongoose';
+import { updateOrderCompletionStatus } from '../helpers/ordercompletion.js';
 
 const hasAssemblyProcess = (process) => {
   return process && process.includes('Assembly');
@@ -14,13 +15,13 @@ const hasMetalProcess = (process) => {
 // Helper function to calculate completion status
 const calculateCompletionStatus = (assignment) => {
   const hasAssembly = hasAssemblyProcess(assignment.process);
-  
+
   if (hasAssembly) {
     // For assembly caps, both metal and assembly must be completed
     const metalCompleted = assignment.metal_tracking?.total_completed_qty || 0;
     const assemblyCompleted = assignment.assembly_tracking?.total_completed_qty || 0;
-    
-    return (metalCompleted >= assignment.quantity && assemblyCompleted >= assignment.quantity) 
+
+    return (metalCompleted >= assignment.quantity && assemblyCompleted >= assignment.quantity)
       ? 'Completed' : 'Pending';
   } else {
     // For non-assembly caps, only check metal tracking
@@ -28,18 +29,12 @@ const calculateCompletionStatus = (assignment) => {
     return metalCompleted >= assignment.quantity ? 'Completed' : 'Pending';
   }
 };
+
 export const getCapOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
 
-    let matchCondition = {};
-    if (orderType === 'pending') {
-      matchCondition.order_status = { $ne: 'Completed' };
-    } else if (orderType === 'completed') {
-      matchCondition.order_status = 'Completed';
-    }
-
-    const orders = await Order.find(matchCondition)
+    const orders = await Order.find({})
       .populate({
         path: 'item_ids',
         populate: {
@@ -47,15 +42,42 @@ export const getCapOrders = async (req, res, next) => {
           model: 'CapItem'
         }
       })
-      .sort({ createdAt: -1 })
       .lean();
 
-    // Filter only orders with at least one cap assignment
-    const filteredOrders = orders.filter(order =>
-      order.item_ids?.some(item => item.team_assignments?.caps?.length > 0)
-    );
+    const filteredOrders = orders
+      .filter(order =>
+        order.item_ids.some(item => item.team_assignments?.caps?.length > 0)
+      )
+      .map(order => {
+        const filteredItems = order.item_ids
+          .filter(item => item.team_assignments?.caps?.length > 0)
+          .map(item => {
+            const capItems = item.team_assignments.caps;
 
-    res.status(200).json({ success: true, data: filteredOrders });
+            // Filter capItems by status
+            const filteredCaps = capItems.filter(cap =>
+              calculateCompletionStatus(cap) === (orderType === 'completed' ? 'Completed' : 'Pending')
+            );
+
+            return {
+              ...item,
+              team_assignments: { caps: filteredCaps }
+            };
+          })
+          .filter(item => item.team_assignments.caps.length > 0); // Remove empty
+
+        return {
+          ...order,
+          item_ids: filteredItems
+        };
+      })
+      .filter(order => order.item_ids.length > 0); // Remove empty
+
+    res.status(200).json({
+      success: true,
+      count: filteredOrders.length,
+      data: filteredOrders
+    });
   } catch (error) {
     next(error);
   }
@@ -86,7 +108,7 @@ export const updateCapTracking = async (req, res, next) => {
       // Process each update
       for (const update of updates) {
         const { assignmentId, processType, newEntry, newTotalCompleted } = update;
-        
+
         if (!assignmentId || !processType || !newEntry || newTotalCompleted === undefined) {
           throw new Error('Invalid update format');
         }
@@ -151,174 +173,20 @@ export const updateCapTracking = async (req, res, next) => {
         }
       }
 
-      // Check if all cap assignments in the item are completed
-      const itemCompletionResult = await OrderItem.aggregate([
-        { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-        {
-          $lookup: {
-            from: 'capitems',
-            localField: 'team_assignments.caps',
-            foreignField: '_id',
-            as: 'cap_assignments'
-          }
-        },
-        {
-          $addFields: {
-            allCapsCompleted: {
-              $allElementsTrue: {
-                $map: {
-                  input: '$cap_assignments',
-                  as: 'assignment',
-                  in: {
-                    $cond: {
-                      if: { $regexMatch: { input: '$$assignment.process', regex: 'Assembly' } },
-                      then: {
-                        $and: [
-                          {
-                            $gte: [
-                              { $ifNull: ['$$assignment.metal_tracking.total_completed_qty', 0] },
-                              '$$assignment.quantity'
-                            ]
-                          },
-                          {
-                            $gte: [
-                              { $ifNull: ['$$assignment.assembly_tracking.total_completed_qty', 0] },
-                              '$$assignment.quantity'
-                            ]
-                          }
-                        ]
-                      },
-                      else: {
-                        $gte: [
-                          { $ifNull: ['$$assignment.metal_tracking.total_completed_qty', 0] },
-                          '$$assignment.quantity'
-                        ]
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        { $project: { allCapsCompleted: 1 } }
-      ]).session(session);
-
-      // Update item status if all caps are completed
-      if (itemCompletionResult[0]?.allCapsCompleted) {
-        await OrderItem.findByIdAndUpdate(
-          itemId,
-          { $set: { 'team_status.caps': 'Completed' } },
-          { session }
-        );
-
-        // Check if all items in the order are completed
-        const orderCompletionResult = await Order.aggregate([
-          { $match: { order_number: orderNumber } },
-          {
-            $lookup: {
-              from: 'orderitems',
-              localField: 'item_ids',
-              foreignField: '_id',
-              as: 'items',
-              pipeline: [
-                {
-                  $lookup: {
-                    from: 'capitems',
-                    localField: 'team_assignments.caps',
-                    foreignField: '_id',
-                    as: 'cap_assignments'
-                  }
-                }
-              ]
-            }
-          },
-          {
-            $addFields: {
-              allItemsCompleted: {
-                $allElementsTrue: {
-                  $map: {
-                    input: '$items',
-                    as: 'item',
-                    in: {
-                      $cond: {
-                        if: { $gt: [{ $size: '$$item.cap_assignments' }, 0] },
-                        then: {
-                          $allElementsTrue: {
-                            $map: {
-                              input: '$$item.cap_assignments',
-                              as: 'assignment',
-                              in: {
-                                $cond: {
-                                  if: { $regexMatch: { input: '$$assignment.process', regex: 'Assembly' } },
-                                  then: {
-                                    $and: [
-                                      {
-                                        $gte: [
-                                          { $ifNull: ['$$assignment.metal_tracking.total_completed_qty', 0] },
-                                          '$$assignment.quantity'
-                                        ]
-                                      },
-                                      {
-                                        $gte: [
-                                          { $ifNull: ['$$assignment.assembly_tracking.total_completed_qty', 0] },
-                                          '$$assignment.quantity'
-                                        ]
-                                      }
-                                    ]
-                                  },
-                                  else: {
-                                    $gte: [
-                                      { $ifNull: ['$$assignment.metal_tracking.total_completed_qty', 0] },
-                                      '$$assignment.quantity'
-                                    ]
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        },
-                        else: true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          { $project: { allItemsCompleted: 1, order_status: 1 } }
-        ]).session(session);
-
-        const orderResult = orderCompletionResult[0];
-        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-          await Order.findOneAndUpdate(
-            { order_number: orderNumber },
-            { $set: { order_status: 'Completed' } },
-            { session }
-          );
-        }
-      }
+      // ✅ SIMPLE FIX: Replace all the complex aggregation logic with one line!
+      await updateOrderCompletionStatus(orderNumber, itemId, 'caps', session);
     });
 
     // Return updated order data
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.caps': { $exists: true, $ne: [] } },
         populate: {
           path: 'team_assignments.caps',
           model: 'CapItem'
         }
       })
       .lean();
-
-    const responseData = {
-      ...updatedOrder,
-      item_ids: updatedOrder.item_ids.map(item => ({
-        ...item,
-        team_assignments: { caps: item.team_assignments.caps }
-      }))
-    };
 
     const updatedAssignments = updates.map(update => ({
       assignmentId: update.assignmentId,
@@ -330,7 +198,7 @@ export const updateCapTracking = async (req, res, next) => {
       success: true,
       message: 'Cap tracking updated successfully',
       data: {
-        order: responseData,
+        order: updatedOrder,
         updatedAssignments
       }
     });
@@ -348,15 +216,15 @@ export const updateCapTracking = async (req, res, next) => {
 // Additional utility function to fix existing data
 export const fixCapStatuses = async (req, res, next) => {
   const session = await mongoose.startSession();
-  
+
   try {
     await session.withTransaction(async () => {
       // Get all cap items
       const capItems = await CapItem.find({}).session(session);
-      
+
       for (const capItem of capItems) {
         const calculatedStatus = calculateCompletionStatus(capItem);
-        
+
         // Update status if it's different
         if (capItem.status !== calculatedStatus) {
           await CapItem.findByIdAndUpdate(
@@ -367,7 +235,7 @@ export const fixCapStatuses = async (req, res, next) => {
         }
       }
     });
-    
+
     res.status(200).json({
       success: true,
       message: 'Cap statuses fixed successfully'

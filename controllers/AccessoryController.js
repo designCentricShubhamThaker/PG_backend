@@ -1,13 +1,56 @@
 import Order from '../models/Order.js';
-import AccessoriesItem from '../models/AccessoriesItem.js';
 import OrderItem from '../models/OrderItem.js';
+import AccessoriesItem from '../models/AccessoriesItem.js';
 import mongoose from 'mongoose';
+import { updateOrderCompletionStatus } from '../helpers/ordercompletion.js';
 
-// Get all accessories items
 export const getAllAccessoriesItems = async (req, res, next) => {
   try {
-    const accessoriesItems = await AccessoriesItem.find().sort({ createdAt: -1 });
-    res.status(200).json({ success: true, data: accessoriesItems });
+    const { orderType } = req.query;
+    let filter = {};
+
+    if (orderType === 'pending') {
+      filter.order_status = 'Pending';
+    } else if (orderType === 'completed') {
+      filter.order_status = 'Completed';
+    }
+
+    const orders = await Order.find(filter)
+      .populate({
+        path: 'item_ids',
+        populate: {
+          path: 'team_assignments.accessories',
+          model: 'AccessoriesItem'
+        }
+      })
+      .lean();
+
+    const filteredOrders = orders
+      .filter(order =>
+        order.item_ids.some(item => item.team_assignments?.accessories?.length > 0)
+      )
+      .map(order => {
+        const filteredItems = order.item_ids
+          .filter(item => item.team_assignments?.accessories?.length > 0)
+          .map(item => {
+            const accessoryItems = item.team_assignments.accessories;
+            return {
+              ...item,
+              team_assignments: { accessories: accessoryItems }
+            };
+          });
+
+        return {
+          ...order,
+          item_ids: filteredItems
+        };
+      });
+
+    res.status(200).json({
+      success: true,
+      count: filteredOrders.length,
+      data: filteredOrders
+    });
   } catch (error) {
     next(error);
   }
@@ -17,7 +60,15 @@ export const updateAccessoriesTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
 
   try {
-    const { orderNumber, itemId, updates, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
+    const {
+      orderNumber,
+      itemId,
+      updates,
+      assignmentId,
+      newEntry,
+      newTotalCompleted,
+      newStatus
+    } = req.body;
 
     const isBulkUpdate = Array.isArray(updates) && updates.length > 0;
     const isSingleUpdate = assignmentId && newEntry && newTotalCompleted !== undefined && newStatus;
@@ -29,7 +80,9 @@ export const updateAccessoriesTracking = async (req, res, next) => {
       });
     }
 
-    const updatesArray = isBulkUpdate ? updates : [{ assignmentId, newEntry, newTotalCompleted, newStatus }];
+    const updatesArray = isBulkUpdate
+      ? updates
+      : [{ assignmentId, newEntry, newTotalCompleted, newStatus }];
 
     await session.withTransaction(async () => {
       const item = await OrderItem.findById(itemId)
@@ -38,17 +91,21 @@ export const updateAccessoriesTracking = async (req, res, next) => {
 
       if (!item) throw new Error('Item not found');
 
-      const accessoriesAssignments = item.team_assignments?.accessories || [];
+      const accessoryAssignments = item.team_assignments?.accessories || [];
 
       for (const update of updatesArray) {
-        const assignment = accessoriesAssignments.find(a => a._id.toString() === update.assignmentId);
-        if (!assignment) throw new Error(`Accessories assignment not found: ${update.assignmentId}`);
+        const assignment = accessoryAssignments.find(
+          a => a._id.toString() === update.assignmentId
+        );
+        if (!assignment) throw new Error(`Accessory assignment not found: ${update.assignmentId}`);
 
         const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
         const remaining = assignment.quantity - currentCompleted;
 
         if (update.newEntry.quantity > remaining) {
-          throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for accessories ${assignment.accessory_name}`);
+          throw new Error(
+            `Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for accessory ${assignment.accessory_name}`
+          );
         }
 
         await AccessoriesItem.findByIdAndUpdate(
@@ -70,129 +127,19 @@ export const updateAccessoriesTracking = async (req, res, next) => {
         );
       }
 
-      // Check item completion
-      const itemCompletionResult = await OrderItem.aggregate([
-        { $match: { _id: new mongoose.Types.ObjectId(itemId) } },
-        {
-          $lookup: {
-            from: 'accessoriesitems',
-            localField: 'team_assignments.accessories',
-            foreignField: '_id',
-            as: 'accessories_assignments'
-          }
-        },
-        {
-          $addFields: {
-            allAccessoriesCompleted: {
-              $allElementsTrue: {
-                $map: {
-                  input: '$accessories_assignments',
-                  as: 'assignment',
-                  in: {
-                    $gte: [
-                      { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                      '$$assignment.quantity'
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        { $project: { allAccessoriesCompleted: 1 } }
-      ]).session(session);
-
-      if (itemCompletionResult[0]?.allAccessoriesCompleted) {
-        await OrderItem.findByIdAndUpdate(
-          itemId,
-          { $set: { 'team_status.accessories': 'Completed' } },
-          { session }
-        );
-
-        const orderCompletionResult = await Order.aggregate([
-          { $match: { order_number: orderNumber } },
-          {
-            $lookup: {
-              from: 'orderitems',
-              localField: 'item_ids',
-              foreignField: '_id',
-              as: 'items',
-              pipeline: [
-                {
-                  $lookup: {
-                    from: 'accessoriesitems',
-                    localField: 'team_assignments.accessories',
-                    foreignField: '_id',
-                    as: 'accessories_assignments'
-                  }
-                }
-              ]
-            }
-          },
-          {
-            $addFields: {
-              allItemsCompleted: {
-                $allElementsTrue: {
-                  $map: {
-                    input: '$items',
-                    as: 'item',
-                    in: {
-                      $cond: {
-                        if: { $gt: [{ $size: '$$item.accessories_assignments' }, 0] },
-                        then: {
-                          $allElementsTrue: {
-                            $map: {
-                              input: '$$item.accessories_assignments',
-                              as: 'assignment',
-                              in: {
-                                $gte: [
-                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
-                                  '$$assignment.quantity'
-                                ]
-                              }
-                            }
-                          }
-                        },
-                        else: true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          { $project: { allItemsCompleted: 1, order_status: 1 } }
-        ]).session(session);
-
-        const orderResult = orderCompletionResult[0];
-        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-          await Order.findOneAndUpdate(
-            { order_number: orderNumber },
-            { $set: { order_status: 'Completed' } },
-            { session }
-          );
-        }
-      }
+      // ✅ SIMPLE FIX: Replace all the complex aggregation logic with one line!
+      await updateOrderCompletionStatus(orderNumber, itemId, 'accessories', session);
     });
 
     const updatedOrder = await Order.findOne({ order_number: orderNumber })
       .populate({
         path: 'item_ids',
-        match: { 'team_assignments.accessories': { $exists: true, $ne: [] } },
         populate: {
           path: 'team_assignments.accessories',
           model: 'AccessoriesItem'
         }
       })
       .lean();
-
-    const responseData = {
-      ...updatedOrder,
-      item_ids: updatedOrder.item_ids.map(item => ({
-        ...item,
-        team_assignments: { accessories: item.team_assignments.accessories }
-      }))
-    };
 
     const updatedAssignments = updatesArray.map(update => ({
       assignmentId: update.assignmentId,
@@ -202,14 +149,14 @@ export const updateAccessoriesTracking = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: 'Accessories tracking updated successfully',
+      message: 'Accessory tracking updated successfully',
       data: {
-        order: responseData,
+        order: updatedOrder,
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
       }
     });
   } catch (error) {
-    console.error('Error updating accessories tracking:', error);
+    console.error('Error updating accessory tracking:', error);
     if (error.message.includes('not found') || error.message.includes('exceeds')) {
       return res.status(400).json({ success: false, message: error.message });
     }
